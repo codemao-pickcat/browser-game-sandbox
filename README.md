@@ -24,6 +24,12 @@ npx playwright install chromium
 
 The trusted host creates an iframe with a stable game origin and starts a `SandboxHostSession`. The game-side client calls `acceptSandboxBridge` with the expected host origin. The host remains the security authority: it validates source, origin, strict Zod schemas, capabilities, payload size, rate limits, and lifecycle.
 
+## CI and publishing
+
+- Pushes and pull requests run Node checks, the Vue 3 consumer build, and Chromium sandbox tests.
+- Tags matching `v*.*.*` run the full suite, synchronize `package.json` to the tag version, build an npm tarball, upload it as an artifact, and publish to GitHub Packages.
+- The package is ESM-first and tested through a Vue 3 + Vite consumer fixture.
+
 ## Documentation
 
 - [English usage guide](./docs/usage.en.md)

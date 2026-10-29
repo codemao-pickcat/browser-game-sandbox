@@ -4,7 +4,9 @@
   "description": "Bare browser sandbox host bridge for untrusted web games",
   "type": "module",
   "license": "Apache-2.0",
-  "private": true,
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,12 +18,16 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
     "check:types": "tsc -p tsconfig.tests.json --noEmit",
+    "test:vue": "npm run build && npm --prefix test/vue-compat install --no-package-lock --ignore-scripts && npm --prefix test/vue-compat run build",
     "test:browser": "npm run build && playwright test -c playwright.config.mjs",
-    "test:all": "npm test && npm run check:types && npm run test:browser",
+    "test:all": "npm test && npm run check:types && npm run test:vue && npm run test:browser",
     "check": "npm run build && npm run check:types && npm test"
   },
   "devDependencies": {
