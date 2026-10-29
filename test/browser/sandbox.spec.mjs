@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
+import { buildBrowserPolicy } from "../../dist/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let hostServer;
@@ -75,6 +76,11 @@ async function serveZod(requestPath, response) {
 }
 
 function hostHtml() {
+  const browserPolicy = buildBrowserPolicy({
+    gameOrigin,
+    hostOrigins: [hostOrigin],
+    capabilities: ["browser.storage.local", "browser.worker.dedicated"],
+  });
   return `<!doctype html>
 <html>
   <body>
@@ -83,7 +89,8 @@ function hostHtml() {
     <iframe
       id="game"
       title="game"
-      sandbox="allow-scripts allow-same-origin"
+      sandbox="${browserPolicy.sandboxTokens.join(" ")}"
+      allow="${browserPolicy.iframeAllow.join("; ")}"
       src="${gameOrigin}/game.html"
     ></iframe>
     <script type="module">
@@ -232,18 +239,16 @@ async function startServers() {
     const pathname = new URL(request.url, gameOrigin ?? "http://127.0.0.1").pathname;
     if (pathname === "/game.html") {
       const importMapNonce = randomBytes(16).toString("base64");
+      const browserPolicy = buildBrowserPolicy({
+        gameOrigin,
+        hostOrigins: [hostOrigin],
+        capabilities: ["browser.storage.local", "browser.worker.dedicated"],
+        scriptNonces: [importMapNonce],
+      });
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy": [
-          "default-src 'self'",
-          `script-src 'self' 'nonce-${importMapNonce}'`,
-          "connect-src 'none'",
-          "worker-src blob:",
-          "object-src 'none'",
-          "base-uri 'none'",
-          "form-action 'none'",
-          `frame-ancestors ${hostOrigin}`,
-        ].join("; "),
+        "Content-Security-Policy": browserPolicy.contentSecurityPolicy,
+        "Permissions-Policy": browserPolicy.permissionsPolicy,
       });
       response.end(gameHtml(importMapNonce));
       return;

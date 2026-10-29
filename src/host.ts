@@ -16,6 +16,10 @@ import {
   type BridgeResponseMessage,
 } from "./protocol.js";
 import { BridgeClosedError, SandboxBridgeError } from "./errors.js";
+import {
+  assertBrowserCapabilities,
+  type BrowserCapability,
+} from "./browser-capabilities.js";
 import type {
   HostMessageEventLike,
   HostWindowLike,
@@ -46,6 +50,7 @@ export interface SandboxHostOptions {
   readonly iframe: IframeLike;
   readonly gameOrigin: string;
   readonly capabilities?: readonly string[];
+  readonly browserCapabilities?: readonly BrowserCapability[];
   readonly methods?: Readonly<Record<string, HostMethodDefinition>>;
   readonly maxPayloadBytes?: number;
   readonly maxRequestsPerSecond?: number;
@@ -64,6 +69,7 @@ export class SandboxHostSession {
   public state: SandboxHostState = "idle";
 
   private readonly capabilities: readonly string[];
+  private readonly browserCapabilities: readonly BrowserCapability[];
   private readonly methods: ReadonlyMap<string, HostMethodDefinition>;
   private readonly maxPayloadBytes: number;
   private readonly maxRequestsPerSecond: number;
@@ -86,6 +92,8 @@ export class SandboxHostSession {
   public constructor(private readonly options: SandboxHostOptions) {
     assertValidOrigin(options.gameOrigin);
     this.capabilities = [...(options.capabilities ?? [])];
+    this.browserCapabilities = [...(options.browserCapabilities ?? [])];
+    assertBrowserCapabilities(this.browserCapabilities);
     this.maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     this.maxRequestsPerSecond =
       options.maxRequestsPerSecond ?? DEFAULT_MAX_REQUESTS_PER_SECOND;
@@ -126,6 +134,9 @@ export class SandboxHostSession {
       },
       "sandbox.getInfo": {
         handler: () => ({ protocolVersion: PROTOCOL_VERSION }),
+      },
+      "sandbox.getBrowserCapabilities": {
+        handler: () => ({ capabilities: this.browserCapabilities }),
       },
       "sandbox.ping": {
         handler: () => ({ ok: true }),

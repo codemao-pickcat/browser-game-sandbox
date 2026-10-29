@@ -101,6 +101,7 @@ await session.connected;
 | --- | ---: | --- |
 | `gameOrigin` | required | Exact origin allowed to initiate the handshake |
 | `capabilities` | `[]` | Capabilities granted to registered host methods |
+| `browserCapabilities` | `[]` | Declared browser capability profile; must match the actual iframe/CSP policy |
 | `maxPayloadBytes` | `65536` | Maximum estimated structured-clone payload size |
 | `maxRequestsPerSecond` | `30` | Request rate limit per session |
 | `maxConcurrentRequests` | `64` | Maximum unresolved host handlers |
@@ -222,6 +223,7 @@ The core host provides these methods:
 | `sandbox.ping` | `{ ok: true }` |
 | `sandbox.getInfo` | `{ protocolVersion }` |
 | `sandbox.getCapabilities` | `{ capabilities }` |
+| `sandbox.getBrowserCapabilities` | `{ capabilities }` |
 | `sandbox.requestClose` | Calls the host `onRequestClose` callback |
 
 These are runtime lifecycle methods, not platform business APIs.
@@ -280,6 +282,54 @@ Content-Security-Policy:
 ```
 
 The exact policy may need to be relaxed for a specific engine, but every relaxation is a new capability decision.
+
+### Browser capability declarations
+
+The host can declare browser permissions separately from plugin capabilities:
+
+```ts
+new SandboxHostSession({
+  // ...
+  browserCapabilities: [
+    "browser.worker.dedicated",
+    "browser.storage.local",
+  ],
+});
+```
+
+The game can query them with `sandbox.getBrowserCapabilities`. This declaration does not override browser security policy; the host must enforce the same profile through iframe flags and response headers. `buildBrowserPolicy` generates sandbox tokens, iframe `allow`, CSP, Permissions-Policy, enforcement status, and warnings.
+
+Available browser capability IDs include:
+
+```text
+browser.storage.local
+browser.storage.indexeddb
+browser.worker.dedicated
+browser.worker.shared
+browser.worker.service
+browser.wasm
+browser.webgl
+browser.webaudio
+browser.fullscreen
+browser.pointer-lock
+browser.clipboard.read
+browser.clipboard.write
+browser.camera
+browser.microphone
+browser.geolocation
+browser.notifications
+browser.popup
+browser.top-navigation
+browser.form-submit
+browser.download
+browser.modals
+browser.presentation
+network.connect
+network.websocket
+network.webrtc
+```
+
+The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and denies Service Workers. Storage, WebGL, WebAudio, WebRTC, and the distinction between Dedicated and Shared Workers are declarative limitations in ordinary browsers; the policy builder reports warnings for them instead of claiming hard isolation.
 
 ### Important limitations
 

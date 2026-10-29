@@ -101,6 +101,7 @@ await session.connected;
 | --- | ---: | --- |
 | `gameOrigin` | 必填 | 允许发起握手的精确 origin |
 | `capabilities` | `[]` | 授予已注册宿主方法的能力名称 |
+| `browserCapabilities` | `[]` | 声明浏览器能力 profile，必须与实际 iframe/CSP 策略一致 |
 | `maxPayloadBytes` | `65536` | 估算后的结构化克隆数据最大大小 |
 | `maxRequestsPerSecond` | `30` | 单个会话的请求速率限制 |
 | `maxConcurrentRequests` | `64` | 最大未完成宿主处理器数量 |
@@ -222,6 +223,7 @@ session.terminate("宿主终止了沙箱");
 | `sandbox.ping` | `{ ok: true }` |
 | `sandbox.getInfo` | `{ protocolVersion }` |
 | `sandbox.getCapabilities` | `{ capabilities }` |
+| `sandbox.getBrowserCapabilities` | `{ capabilities }` |
 | `sandbox.requestClose` | 调用宿主的 `onRequestClose` 回调 |
 
 这些是运行时生命周期方法，不是平台业务 API。
@@ -280,6 +282,54 @@ Content-Security-Policy:
 ```
 
 某个游戏引擎可能需要放宽策略，但每次放宽都必须视为新的能力决策并单独测试。
+
+### 浏览器能力声明
+
+宿主可以把浏览器权限与插件 capability 分开声明：
+
+```ts
+new SandboxHostSession({
+  // ...
+  browserCapabilities: [
+    "browser.worker.dedicated",
+    "browser.storage.local",
+  ],
+});
+```
+
+游戏可以通过 `sandbox.getBrowserCapabilities` 查询这些声明。声明不会覆盖浏览器安全策略；宿主必须通过 iframe 配置和响应头实际执行相同 profile。`buildBrowserPolicy` 会生成 sandbox token、iframe `allow`、CSP、Permissions-Policy、执行状态和警告。
+
+当前浏览器权限点包括：
+
+```text
+browser.storage.local
+browser.storage.indexeddb
+browser.worker.dedicated
+browser.worker.shared
+browser.worker.service
+browser.wasm
+browser.webgl
+browser.webaudio
+browser.fullscreen
+browser.pointer-lock
+browser.clipboard.read
+browser.clipboard.write
+browser.camera
+browser.microphone
+browser.geolocation
+browser.notifications
+browser.popup
+browser.top-navigation
+browser.form-submit
+browser.download
+browser.modals
+browser.presentation
+network.connect
+network.websocket
+network.webrtc
+```
+
+已测试的基线使用 `worker-src blob:` 允许 Blob Dedicated Worker，并拒绝 Service Worker。Storage、WebGL、WebAudio、WebRTC，以及 Dedicated/Shared Worker 的区分，在普通浏览器中属于声明性限制；policy builder 会报告警告，而不会假装提供硬隔离。
 
 ### 重要限制
 

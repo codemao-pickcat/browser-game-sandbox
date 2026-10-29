@@ -146,7 +146,10 @@ async function connect(options = {}) {
 }
 
 test("performs a MessageChannel handshake and serves core calls", async () => {
-  const { client, host, gameTarget } = await connect({ capabilities: ["storage.local"] });
+  const { client, host, gameTarget } = await connect({
+    capabilities: ["storage.local"],
+    browserCapabilities: ["browser.worker.dedicated"],
+  });
 
   assert.deepEqual(await client.call("sandbox.ping", {}), { ok: true });
   assert.deepEqual(await client.call("sandbox.getCapabilities", {}), {
@@ -154,6 +157,9 @@ test("performs a MessageChannel handshake and serves core calls", async () => {
   });
   assert.deepEqual(await client.call("sandbox.getInfo", {}), {
     protocolVersion: 1,
+  });
+  assert.deepEqual(await client.call("sandbox.getBrowserCapabilities", {}), {
+    capabilities: ["browser.worker.dedicated"],
   });
   assert.deepEqual(gameTarget.targetOrigins, [GAME_ORIGIN]);
 
@@ -360,6 +366,13 @@ test("ignores malformed requests instead of invoking a host method", async () =>
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls, 0);
   host.terminate();
+});
+
+test("rejects unknown browser capabilities at host construction", () => {
+  assert.throws(
+    () => createHarness({ browserCapabilities: ["browser.worker.unknown"] }),
+    /Unknown browser capability/,
+  );
 });
 
 test("zod protocol schemas reject extra, missing, and contradictory fields", () => {
