@@ -135,6 +135,71 @@ console.log(info.protocolVersion, capabilities.capabilities);
 
 `acceptSandboxBridge` announces readiness to the parent with an exact `targetOrigin`, validates the parent source and origin, accepts exactly one transferred port, and sends the port-level ready message.
 
+### 4.1 Vue 3 config modules and native components
+
+A Vue 3 application can keep its bridge configuration in a separate module and install the integration from the `/vue` entry point. The plugin uses Vue `provide/inject`, so any native Vue component can access the same bridge and typed SDK.
+
+`sandbox.config.ts`:
+
+```ts
+import { z } from "zod";
+import {
+  defineMethod,
+  defineSandboxPlugin,
+  type SandboxCallTransport,
+} from "@codemao-pickcat/browser-game-sandbox";
+import { defineSandboxVueConfig } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+const echoPlugin = defineSandboxPlugin({
+  id: "com.example.echo",
+  version: "1.0.0",
+  methods: {
+    echo: defineMethod({
+      input: z.object({ value: z.string() }),
+      output: z.object({ value: z.string() }),
+    }),
+  },
+});
+
+const transport: SandboxCallTransport = {
+  call: async (_method, payload) => payload,
+};
+
+export default defineSandboxVueConfig({
+  transport,
+  plugins: { echo: echoPlugin },
+});
+```
+
+Install the plugin at the app entry point:
+
+```ts
+import { createApp } from "vue";
+import App from "./App.vue";
+import sandboxConfig from "./sandbox.config";
+import { createSandboxVuePlugin } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+createApp(App).use(createSandboxVuePlugin(sandboxConfig)).mount("#app");
+```
+
+Call it from a native Vue component:
+
+```vue
+<script setup lang="ts">
+import { useSandboxReady, useSandboxSdk } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+const sdk = useSandboxSdk();
+const ready = useSandboxReady();
+
+async function callHost(): Promise<void> {
+  await ready;
+  await sdk.value?.echo.echo({ value: "hello" });
+}
+</script>
+```
+
+For a real bridge, replace `transport` with `bridge`, `bridgeOptions`, or a promise for either. The plugin updates its injected refs when `ready` resolves.
+
 ## 5. Calling host methods
 
 ```ts

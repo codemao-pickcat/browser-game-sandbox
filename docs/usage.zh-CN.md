@@ -135,6 +135,71 @@ console.log(info.protocolVersion, capabilities.capabilities);
 
 `acceptSandboxBridge` 会向精确的 `targetOrigin` 发送就绪消息，校验父窗口的 source 和 origin，只接受一个传入的端口，然后通过端口发送握手完成消息。
 
+### 4.1 Vue 3 配置文件与原生组件
+
+Vue 3 项目可以把桥接配置预先放在独立配置文件中，再通过 `/vue` 入口安装插件。插件会使用 Vue 的 `provide/inject`，因此任意原生 Vue 组件都可以获取同一个 bridge 和类型化 SDK。
+
+配置文件 `sandbox.config.ts`：
+
+```ts
+import { z } from "zod";
+import {
+  defineMethod,
+  defineSandboxPlugin,
+  type SandboxCallTransport,
+} from "@codemao-pickcat/browser-game-sandbox";
+import { defineSandboxVueConfig } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+const echoPlugin = defineSandboxPlugin({
+  id: "com.example.echo",
+  version: "1.0.0",
+  methods: {
+    echo: defineMethod({
+      input: z.object({ value: z.string() }),
+      output: z.object({ value: z.string() }),
+    }),
+  },
+});
+
+const transport: SandboxCallTransport = {
+  call: async (_method, payload) => payload,
+};
+
+export default defineSandboxVueConfig({
+  transport,
+  plugins: { echo: echoPlugin },
+});
+```
+
+应用入口安装插件：
+
+```ts
+import { createApp } from "vue";
+import App from "./App.vue";
+import sandboxConfig from "./sandbox.config";
+import { createSandboxVuePlugin } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+createApp(App).use(createSandboxVuePlugin(sandboxConfig)).mount("#app");
+```
+
+原生 Vue 组件中调用：
+
+```vue
+<script setup lang="ts">
+import { useSandboxReady, useSandboxSdk } from "@codemao-pickcat/browser-game-sandbox/vue";
+
+const sdk = useSandboxSdk();
+const ready = useSandboxReady();
+
+async function callHost(): Promise<void> {
+  await ready;
+  await sdk.value?.echo.echo({ value: "hello" });
+}
+</script>
+```
+
+真实桥接场景可将 `transport` 替换为 `bridge`、`bridgeOptions` 或其 Promise；Vue 插件会在 `ready` 完成后更新注入的 refs。
+
 ## 5. 调用宿主方法
 
 ```ts
