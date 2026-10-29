@@ -1,0 +1,30 @@
+{
+  "name": "@codemao/browser-game-sandbox",
+  "version": "0.1.0",
+  "description": "Bare browser sandbox host bridge for untrusted web games",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:browser": "npm run build && playwright test -c playwright.config.mjs",
+    "test:all": "npm test && npm run test:browser",
+    "check": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "typescript": "^5.9.2"
+  }
+}
