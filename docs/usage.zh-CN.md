@@ -58,7 +58,7 @@ npm run test:all
 创建并启动宿主会话：
 
 ```ts
-import { SandboxHostSession } from "@codemao/browser-game-sandbox";
+import { SandboxHostSession } from "@codemao-pickcat/browser-game-sandbox";
 
 const iframe = document.querySelector("#game-frame");
 if (!(iframe instanceof HTMLIFrameElement)) {
@@ -113,7 +113,7 @@ await session.connected;
 游戏必须知道受信任宿主的精确 origin。它应来自受信任的运行时配置，不要直接使用用户输入。
 
 ```ts
-import { acceptSandboxBridge } from "@codemao/browser-game-sandbox";
+import { acceptSandboxBridge } from "@codemao-pickcat/browser-game-sandbox";
 
 const bridge = await acceptSandboxBridge({
   window,

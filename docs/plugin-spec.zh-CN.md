@@ -134,7 +134,7 @@ import {
   createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
-} from "@codemao/browser-game-sandbox";
+} from "@codemao-pickcat/browser-game-sandbox";
 
 const echoPlugin = defineSandboxPlugin({
   id: "com.example.echo",
@@ -161,7 +161,7 @@ SDK 会在游戏侧校验输入和宿主返回值；校验失败不会继续发�
 import {
   composeHostPlugins,
   createHostPlugin,
-} from "@codemao/browser-game-sandbox";
+} from "@codemao-pickcat/browser-game-sandbox";
 
 const hostExtensions = composeHostPlugins([
   createHostPlugin(echoPlugin, {

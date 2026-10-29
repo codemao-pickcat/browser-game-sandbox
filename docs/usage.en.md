@@ -58,7 +58,7 @@ Create an iframe with a stable, exact game origin. Do not use a wildcard origin.
 Create and start a host session:
 
 ```ts
-import { SandboxHostSession } from "@codemao/browser-game-sandbox";
+import { SandboxHostSession } from "@codemao-pickcat/browser-game-sandbox";
 
 const iframe = document.querySelector("#game-frame");
 if (!(iframe instanceof HTMLIFrameElement)) {
@@ -113,7 +113,7 @@ await session.connected;
 The game must know the exact trusted host origin. It should come from trusted runtime configuration, not from arbitrary user input.
 
 ```ts
-import { acceptSandboxBridge } from "@codemao/browser-game-sandbox";
+import { acceptSandboxBridge } from "@codemao-pickcat/browser-game-sandbox";
 
 const bridge = await acceptSandboxBridge({
   window,

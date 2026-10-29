@@ -1,5 +1,5 @@
 {
-  "name": "@codemao/browser-game-sandbox",
+  "name": "@codemao-pickcat/browser-game-sandbox",
   "version": "0.1.0",
   "description": "Bare browser sandbox host bridge for untrusted web games",
   "type": "module",

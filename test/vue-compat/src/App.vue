@@ -6,7 +6,7 @@ import {
   defineMethod,
   defineSandboxPlugin,
   type SandboxCallTransport,
-} from "@codemao/browser-game-sandbox";
+} from "@codemao-pickcat/browser-game-sandbox";
 
 const echoPlugin = defineSandboxPlugin({
   id: "com.example.vue",

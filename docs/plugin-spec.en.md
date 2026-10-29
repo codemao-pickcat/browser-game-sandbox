@@ -133,7 +133,7 @@ import {
   createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
-} from "@codemao/browser-game-sandbox";
+} from "@codemao-pickcat/browser-game-sandbox";
 
 const echoPlugin = defineSandboxPlugin({
   id: "com.example.echo",
@@ -160,7 +160,7 @@ The same contract can be bound to a host implementation:
 import {
   composeHostPlugins,
   createHostPlugin,
-} from "@codemao/browser-game-sandbox";
+} from "@codemao-pickcat/browser-game-sandbox";
 
 const hostExtensions = composeHostPlugins([
   createHostPlugin(echoPlugin, {
