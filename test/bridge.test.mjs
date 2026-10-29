@@ -712,6 +712,28 @@ test("rejects a replay of a completed request ID", async () => {
   host.terminate();
 });
 
+test("enforces plugin method payload and timeout limits", async () => {
+  const { client, host } = await connect({
+    methods: {
+      "test.limited": {
+        maxPayloadBytes: 4,
+        timeoutMs: 10,
+        handler: () => new Promise(() => {}),
+      },
+    },
+  });
+
+  await assert.rejects(
+    client.call("test.limited", "12345"),
+    (error) => error instanceof SandboxBridgeError && error.code === "INVALID_PAYLOAD",
+  );
+  await assert.rejects(
+    client.call("test.limited", "ok"),
+    (error) => error instanceof SandboxBridgeError && error.code === "TIMEOUT",
+  );
+  host.terminate();
+});
+
 test("caps remembered request IDs to prevent long-session memory growth", async () => {
   let calls = 0;
   const { host, channels } = await connect({

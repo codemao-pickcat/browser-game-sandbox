@@ -19,9 +19,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
+    "check:types": "tsc -p tsconfig.tests.json --noEmit",
     "test:browser": "npm run build && playwright test -c playwright.config.mjs",
-    "test:all": "npm test && npm run test:browser",
-    "check": "npm run build && npm test"
+    "test:all": "npm test && npm run check:types && npm run test:browser",
+    "check": "npm run build && npm run check:types && npm test"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

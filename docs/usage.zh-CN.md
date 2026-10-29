@@ -158,6 +158,18 @@ const echoed = await bridge.call<{ value: string }>(
 
 游戏 payload 内的字段不能自行授予 capability。
 
+### 5.1 带类型推导的插件 SDK
+
+游戏侧可以引入插件契约，让 SDK 根据插件自动推导方法名、输入和输出类型：
+
+```ts
+const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
+const result = await sdk.echo.echo({ value: "hello" });
+// result.value 的类型是 string
+```
+
+SDK 会在发送前校验输入，并在返回给游戏逻辑前校验宿主输出。宿主仍必须自己校验；游戏侧校验不是安全边界。
+
 ## 6. 取消和超时
 
 ```ts

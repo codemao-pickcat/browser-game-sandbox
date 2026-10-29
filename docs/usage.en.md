@@ -158,6 +158,18 @@ A method is executable only when:
 
 A field inside the game payload cannot grant a capability.
 
+### 5.1 Typed plugin SDK
+
+A plugin contract can be imported by the game-side SDK so method names, inputs, and outputs are inferred from the contract:
+
+```ts
+const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
+const result = await sdk.echo.echo({ value: "hello" });
+// result.value is typed as string
+```
+
+The SDK validates inputs before sending and validates host outputs before returning them to game logic. The host still performs its own validation; client-side validation is not a security boundary.
+
 ## 6. Cancellation and timeouts
 
 ```ts

@@ -28,10 +28,15 @@ import { browserMessageChannelFactory } from "./transport.js";
 export interface HostMethodContext {
   readonly signal: AbortSignal;
   readonly capabilities: readonly string[];
+  readonly requestId: string;
+  readonly methodName: string;
 }
 
 export interface HostMethodDefinition {
   readonly capability?: string;
+  readonly maxPayloadBytes?: number;
+  readonly maxConcurrent?: number;
+  readonly timeoutMs?: number;
   readonly validate?: (payload: unknown) => void;
   readonly handler: (payload: unknown, context: HostMethodContext) => unknown | Promise<unknown>;
 }
@@ -68,6 +73,7 @@ export class SandboxHostSession {
   private readonly onMessage = (event: HostMessageEventLike) =>
     this.handleWindowMessage(event);
   private readonly requestControllers = new Map<string, AbortController>();
+  private readonly activeMethodRequests = new Map<string, number>();
   private readonly seenRequestIds = new Set<string>();
   private readonly requestTimestamps: number[] = [];
   private readonly handshakeTimeoutMs: number;
@@ -145,6 +151,7 @@ export class SandboxHostSession {
       if (allMethods.has(name)) {
         throw new TypeError(`Host method already exists: ${name}`);
       }
+      assertMethodLimits(name, definition);
       allMethods.set(name, definition);
     }
     this.methods = allMethods;
@@ -186,6 +193,7 @@ export class SandboxHostSession {
 
     for (const controller of this.requestControllers.values()) controller.abort();
     this.requestControllers.clear();
+    this.activeMethodRequests.clear();
     this.seenRequestIds.clear();
 
     if (this.port) {
@@ -294,11 +302,6 @@ export class SandboxHostSession {
       return;
     }
 
-    if (estimatePayloadBytes(message.payload) > this.maxPayloadBytes) {
-      this.sendError(message.id, "INVALID_PAYLOAD", "Payload exceeds the configured limit");
-      return;
-    }
-
     const method = this.methods.get(message.method);
     if (!method) {
       this.sendError(message.id, "UNKNOWN_METHOD", `Unknown method: ${message.method}`);
@@ -317,15 +320,47 @@ export class SandboxHostSession {
       return;
     }
 
+    const methodPayloadLimit = Math.min(
+      this.maxPayloadBytes,
+      method.maxPayloadBytes ?? this.maxPayloadBytes,
+    );
+    if (estimatePayloadBytes(message.payload) > methodPayloadLimit) {
+      this.sendError(message.id, "INVALID_PAYLOAD", "Payload exceeds the configured limit");
+      return;
+    }
+
+    const activeForMethod = this.activeMethodRequests.get(message.method) ?? 0;
+    if (method.maxConcurrent !== undefined && activeForMethod >= method.maxConcurrent) {
+      this.sendError(message.id, "RATE_LIMITED", "Method concurrency limit exceeded");
+      return;
+    }
+
     const controller = new AbortController();
     this.requestControllers.set(message.id, controller);
+    this.activeMethodRequests.set(message.method, activeForMethod + 1);
+    let timedOut = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const payload = await method.handler(message.payload, {
+      const handlerPromise = method.handler(message.payload, {
         signal: controller.signal,
         capabilities: this.capabilities,
+        requestId: message.id,
+        methodName: message.method,
       });
-      if (estimatePayloadBytes(payload) > this.maxPayloadBytes) {
+      const payload = await (method.timeoutMs === undefined
+        ? handlerPromise
+        : Promise.race([
+            handlerPromise,
+            new Promise<never>((_, reject) => {
+              timeoutTimer = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+                reject(new SandboxBridgeError("TIMEOUT", "Host method timed out"));
+              }, method.timeoutMs);
+            }),
+          ]));
+      if (estimatePayloadBytes(payload) > methodPayloadLimit) {
         this.sendError(message.id, "INVALID_PAYLOAD", "Response exceeds the configured limit");
         return;
       }
@@ -337,9 +372,17 @@ export class SandboxHostSession {
         payload,
       });
     } catch {
-      this.sendError(message.id, "INTERNAL_ERROR", "Host method failed");
+      this.sendError(
+        message.id,
+        timedOut ? "TIMEOUT" : "INTERNAL_ERROR",
+        timedOut ? "Host method timed out" : "Host method failed",
+      );
     } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       this.requestControllers.delete(message.id);
+      const remaining = (this.activeMethodRequests.get(message.method) ?? 1) - 1;
+      if (remaining > 0) this.activeMethodRequests.set(message.method, remaining);
+      else this.activeMethodRequests.delete(message.method);
     }
   }
 
@@ -382,6 +425,21 @@ export class SandboxHostSession {
     if (this.state !== "connected" || !this.port) {
       throw new BridgeClosedError("Sandbox is not connected");
     }
+  }
+}
+
+function assertMethodLimits(name: string, method: HostMethodDefinition): void {
+  if (method.maxPayloadBytes !== undefined &&
+      (!Number.isSafeInteger(method.maxPayloadBytes) || method.maxPayloadBytes <= 0)) {
+    throw new TypeError(`Invalid maxPayloadBytes for method: ${name}`);
+  }
+  if (method.maxConcurrent !== undefined &&
+      (!Number.isSafeInteger(method.maxConcurrent) || method.maxConcurrent <= 0)) {
+    throw new TypeError(`Invalid maxConcurrent for method: ${name}`);
+  }
+  if (method.timeoutMs !== undefined &&
+      (!Number.isFinite(method.timeoutMs) || method.timeoutMs <= 0)) {
+    throw new TypeError(`Invalid timeoutMs for method: ${name}`);
   }
 }
 
