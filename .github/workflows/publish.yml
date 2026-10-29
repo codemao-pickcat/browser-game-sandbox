@@ -42,7 +42,10 @@ jobs:
             echo "Tag must match v*.*.*: $tag"
             exit 1
           fi
-          npm version "$version" --no-git-tag-version
+          current_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
+          if [[ "$current_version" != "$version" ]]; then
+            npm version "$version" --no-git-tag-version
+          fi
 
       - name: Build package artifact
         run: mkdir -p artifacts && npm pack --pack-destination artifacts
