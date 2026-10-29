@@ -5,6 +5,10 @@ import {
   SandboxBridgeClient,
   SandboxHostSession,
   acceptSandboxBridge,
+  isBridgeInitMessage,
+  isBridgeRequestMessage,
+  isBridgeResponseMessage,
+  isBridgeEventMessage,
 } from "../dist/index.js";
 
 const HOST_ORIGIN = "https://host.example.test";
@@ -356,6 +360,69 @@ test("ignores malformed requests instead of invoking a host method", async () =>
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls, 0);
   host.terminate();
+});
+
+test("zod protocol schemas reject extra, missing, and contradictory fields", () => {
+  assert.equal(
+    isBridgeInitMessage({
+      type: "sandbox:init",
+      version: 1,
+      capabilities: [],
+      maxPayloadBytes: 64,
+      extra: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isBridgeRequestMessage({
+      type: "request",
+      version: 1,
+      id: "missing-payload",
+      method: "sandbox.ping",
+    }),
+    false,
+  );
+  assert.equal(
+    isBridgeRequestMessage({
+      type: "request",
+      version: 1,
+      id: "extra-field",
+      method: "sandbox.ping",
+      payload: {},
+      extra: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isBridgeResponseMessage({
+      type: "response",
+      version: 1,
+      id: "contradictory",
+      ok: false,
+      payload: { shouldNotExist: true },
+      error: { code: "INVALID_PAYLOAD", message: "invalid" },
+    }),
+    false,
+  );
+  assert.equal(
+    isBridgeResponseMessage({
+      type: "response",
+      version: 1,
+      id: "contradictory",
+      ok: true,
+      payload: {},
+      error: { code: "INTERNAL_ERROR", message: "shouldNotExist" },
+    }),
+    false,
+  );
+  assert.equal(
+    isBridgeEventMessage({
+      type: "event",
+      version: 1,
+      name: "sandbox.event",
+    }),
+    false,
+  );
 });
 
 test("does not treat a payload field as a capability grant", async () => {

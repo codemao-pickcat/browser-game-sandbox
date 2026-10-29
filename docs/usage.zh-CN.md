@@ -15,7 +15,7 @@
 1. 使用 `window.postMessage` 完成初始握手。
 2. 传递一个独立的 `MessageChannel`，后续请求、响应、事件、取消和终止都通过该端口完成。
 
-宿主是安全校验方。游戏侧 client 只是类型封装，不能被当作安全边界。
+宿主是安全校验方。游戏侧 client 只是类型封装，不能被当作安全边界。运行时协议消息使用严格的 Zod schema 校验；payload 大小估算和浏览器 origin 校验仍然是独立的运行时控制。
 
 ## 2. 安装与构建
 
@@ -278,7 +278,11 @@ Content-Security-Policy:
 - Dedicated Worker 与禁止 Service Worker 的组合必须在目标浏览器中实际验证。
 - 宿主方法属于受信任宿主代码，其内部授权逻辑不属于本包负责范围。
 
-## 10. 错误处理
+## 10. 校验与错误处理
+
+桥接使用严格的 Zod schema 校验协议 envelope。未知字段、缺少必填字段、不支持的协议版本以及自相矛盾的响应字段，会在调用宿主方法前被拒绝。Zod 只负责消息结构校验，不能替代 origin/source 校验、capability 校验、payload 限制、限流或宿主侧授权。
+
+## 11. 错误处理
 
 错误会以 `SandboxBridgeError` 形式返回：
 
@@ -295,7 +299,7 @@ Content-Security-Policy:
 | `DUPLICATE_REQUEST` | 请求 ID 已经使用过 |
 | `INTERNAL_ERROR` | 宿主处理器失败，内部细节不会暴露 |
 
-## 11. 协议不变量
+## 12. 协议不变量
 
 - 当前协议版本为 `1`。
 - 请求 ID 在一个宿主会话生命周期内只能使用一次。

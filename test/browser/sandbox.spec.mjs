@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,10 +54,31 @@ async function serveDist(requestPath, response) {
   }
 }
 
+async function serveZod(requestPath, response) {
+  const relativePath = requestPath.slice("/zod/".length);
+  const filePath = resolve(repoRoot, "node_modules", "zod", relativePath);
+  const zodRoot = resolve(repoRoot, "node_modules", "zod") + sep;
+  if (!filePath.startsWith(zodRoot)) {
+    response.writeHead(404);
+    response.end();
+    return;
+  }
+
+  try {
+    const body = await readFile(filePath);
+    response.writeHead(200, { "Content-Type": contentType(filePath) });
+    response.end(body);
+  } catch {
+    response.writeHead(404);
+    response.end();
+  }
+}
+
 function hostHtml() {
   return `<!doctype html>
 <html>
   <body>
+    <script type="importmap">${JSON.stringify({ imports: { zod: `${hostOrigin}/zod/index.js` } })}</script>
     <div id="host-status">starting</div>
     <iframe
       id="game"
@@ -99,10 +121,11 @@ function hostHtml() {
 </html>`;
 }
 
-function gameHtml() {
+function gameHtml(importMapNonce) {
   return `<!doctype html>
 <html>
   <body>
+    <script type="importmap" nonce="${importMapNonce}">${JSON.stringify({ imports: { zod: `${gameOrigin}/zod/index.js` } })}</script>
     <div id="bridge">pending</div>
     <div id="local-storage">pending</div>
     <div id="indexed-db">pending</div>
@@ -208,11 +231,12 @@ async function startServers() {
   gameServer = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, gameOrigin ?? "http://127.0.0.1").pathname;
     if (pathname === "/game.html") {
+      const importMapNonce = randomBytes(16).toString("base64");
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Security-Policy": [
           "default-src 'self'",
-          "script-src 'self'",
+          `script-src 'self' 'nonce-${importMapNonce}'`,
           "connect-src 'none'",
           "worker-src blob:",
           "object-src 'none'",
@@ -221,7 +245,7 @@ async function startServers() {
           `frame-ancestors ${hostOrigin}`,
         ].join("; "),
       });
-      response.end(gameHtml());
+      response.end(gameHtml(importMapNonce));
       return;
     }
     if (pathname === "/game.js") {
@@ -249,6 +273,10 @@ async function startServers() {
       await serveDist(pathname, response);
       return;
     }
+    if (pathname.startsWith("/zod/")) {
+      await serveZod(pathname, response);
+      return;
+    }
     response.writeHead(404);
     response.end();
   });
@@ -265,6 +293,10 @@ async function startServers() {
     }
     if (pathname.startsWith("/dist/")) {
       await serveDist(pathname, response);
+      return;
+    }
+    if (pathname.startsWith("/zod/")) {
+      await serveZod(pathname, response);
       return;
     }
     response.writeHead(404);

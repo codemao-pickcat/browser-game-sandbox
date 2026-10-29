@@ -22,7 +22,7 @@ npx playwright install chromium
 
 ## Runtime shape
 
-The trusted host creates an iframe with a stable game origin and starts a `SandboxHostSession`. The game-side client calls `acceptSandboxBridge` with the expected host origin. The host remains the security authority: it validates source, origin, schemas, capabilities, payload size, rate limits, and lifecycle.
+The trusted host creates an iframe with a stable game origin and starts a `SandboxHostSession`. The game-side client calls `acceptSandboxBridge` with the expected host origin. The host remains the security authority: it validates source, origin, strict Zod schemas, capabilities, payload size, rate limits, and lifecycle.
 
 ## Documentation
 

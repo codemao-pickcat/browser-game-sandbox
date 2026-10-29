@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const PROTOCOL_VERSION = 1 as const;
 export const DEFAULT_MAX_PAYLOAD_BYTES = 64 * 1024;
 export const DEFAULT_MAX_REQUESTS_PER_SECOND = 30;
@@ -5,6 +7,90 @@ export const DEFAULT_MAX_CONCURRENT_REQUESTS = 64;
 export const DEFAULT_MAX_REQUEST_IDS = 10_000;
 export const DEFAULT_CALL_TIMEOUT_MS = 5_000;
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
+
+export const protocolVersionSchema = z.literal(PROTOCOL_VERSION);
+export const bridgeIdSchema = z.string().min(1).max(128);
+export const bridgeMethodNameSchema = z
+  .string()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z][A-Za-z0-9._-]*$/);
+export const bridgeErrorSchema = z
+  .object({
+    code: z.string().min(1).max(64),
+    message: z.string().max(256),
+  })
+  .strict();
+
+export const bridgeInitSchema = z
+  .object({
+    type: z.literal("sandbox:init"),
+    version: protocolVersionSchema,
+    capabilities: z.array(z.string().max(128)).max(256),
+    maxPayloadBytes: z
+      .number()
+      .int()
+      .positive()
+      .refine(Number.isSafeInteger, "must be a safe integer"),
+  })
+  .strict();
+
+export const bridgeReadySchema = z
+  .object({
+    type: z.literal("sandbox:ready"),
+    version: protocolVersionSchema,
+  })
+  .strict();
+
+export const bridgeRequestSchema = z
+  .object({
+    type: z.literal("request"),
+    version: protocolVersionSchema,
+    id: bridgeIdSchema,
+    method: bridgeMethodNameSchema,
+    payload: z.unknown(),
+  })
+  .strict()
+  .superRefine(requireOwnPayload);
+
+export const bridgeCancelSchema = z
+  .object({
+    type: z.literal("cancel"),
+    version: protocolVersionSchema,
+    id: bridgeIdSchema,
+  })
+  .strict();
+
+export const bridgeResponseSchema = z.union([
+  z
+    .object({
+      type: z.literal("response"),
+      version: protocolVersionSchema,
+      id: bridgeIdSchema,
+      ok: z.literal(true),
+      payload: z.unknown().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("response"),
+      version: protocolVersionSchema,
+      id: bridgeIdSchema,
+      ok: z.literal(false),
+      error: bridgeErrorSchema,
+    })
+    .strict(),
+]);
+
+export const bridgeEventSchema = z
+  .object({
+    type: z.literal("event"),
+    version: protocolVersionSchema,
+    name: bridgeMethodNameSchema,
+    payload: z.unknown(),
+  })
+  .strict()
+  .superRefine(requireOwnPayload);
 
 export type BridgeMessageType =
   | "sandbox:init"
@@ -14,61 +100,13 @@ export type BridgeMessageType =
   | "event"
   | "cancel";
 
-export interface BridgeInitMessage {
-  readonly type: "sandbox:init";
-  readonly version: number;
-  readonly capabilities: readonly string[];
-  readonly maxPayloadBytes: number;
-}
-
-export interface BridgeReadyMessage {
-  readonly type: "sandbox:ready";
-  readonly version: number;
-}
-
-export interface BridgeRequestMessage {
-  readonly type: "request";
-  readonly version: number;
-  readonly id: string;
-  readonly method: string;
-  readonly payload: unknown;
-}
-
-export interface BridgeCancelMessage {
-  readonly type: "cancel";
-  readonly version: number;
-  readonly id: string;
-}
-
-export interface BridgeErrorPayload {
-  readonly code: string;
-  readonly message: string;
-}
-
-export type BridgeResponseMessage =
-  | {
-      readonly type: "response";
-      readonly version: number;
-      readonly id: string;
-      readonly ok: true;
-      readonly payload?: unknown;
-      readonly error?: never;
-    }
-  | {
-      readonly type: "response";
-      readonly version: number;
-      readonly id: string;
-      readonly ok: false;
-      readonly payload?: never;
-      readonly error: BridgeErrorPayload;
-    };
-
-export interface BridgeEventMessage {
-  readonly type: "event";
-  readonly version: number;
-  readonly name: string;
-  readonly payload: unknown;
-}
+export type BridgeErrorPayload = z.infer<typeof bridgeErrorSchema>;
+export type BridgeInitMessage = z.infer<typeof bridgeInitSchema>;
+export type BridgeReadyMessage = z.infer<typeof bridgeReadySchema>;
+export type BridgeRequestMessage = z.infer<typeof bridgeRequestSchema>;
+export type BridgeCancelMessage = z.infer<typeof bridgeCancelSchema>;
+export type BridgeResponseMessage = z.infer<typeof bridgeResponseSchema>;
+export type BridgeEventMessage = z.infer<typeof bridgeEventSchema>;
 
 export type BridgePortMessage =
   | BridgeReadyMessage
@@ -82,87 +120,39 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isProtocolVersion(value: unknown): value is number {
-  return value === PROTOCOL_VERSION;
+  return protocolVersionSchema.safeParse(value).success;
 }
 
 export function isBridgeReadyMessage(value: unknown): value is BridgeReadyMessage {
-  return (
-    isRecord(value) &&
-    value.type === "sandbox:ready" &&
-    isProtocolVersion(value.version)
-  );
+  return bridgeReadySchema.safeParse(value).success;
 }
 
 export function isBridgeInitMessage(value: unknown): value is BridgeInitMessage {
-  return (
-    isRecord(value) &&
-    value.type === "sandbox:init" &&
-    isProtocolVersion(value.version) &&
-    Array.isArray(value.capabilities) &&
-    value.capabilities.every((capability) => typeof capability === "string") &&
-    typeof value.maxPayloadBytes === "number" &&
-    Number.isSafeInteger(value.maxPayloadBytes) &&
-    value.maxPayloadBytes > 0
-  );
+  return bridgeInitSchema.safeParse(value).success;
 }
 
 export function isBridgeRequestMessage(value: unknown): value is BridgeRequestMessage {
-  return (
-    isRecord(value) &&
-    value.type === "request" &&
-    isProtocolVersion(value.version) &&
-    isValidId(value.id) &&
-    isValidMethodName(value.method) &&
-    "payload" in value
-  );
+  return bridgeRequestSchema.safeParse(value).success;
 }
 
 export function isBridgeCancelMessage(value: unknown): value is BridgeCancelMessage {
-  return (
-    isRecord(value) &&
-    value.type === "cancel" &&
-    isProtocolVersion(value.version) &&
-    isValidId(value.id)
-  );
+  return bridgeCancelSchema.safeParse(value).success;
 }
 
 export function isBridgeResponseMessage(value: unknown): value is BridgeResponseMessage {
-  return (
-    isRecord(value) &&
-    value.type === "response" &&
-    isProtocolVersion(value.version) &&
-    isValidId(value.id) &&
-    typeof value.ok === "boolean" &&
-    (value.ok
-      ? !("error" in value)
-      : !("payload" in value) &&
-        isRecord(value.error) &&
-        typeof value.error.code === "string" &&
-        typeof value.error.message === "string")
-  );
+  return bridgeResponseSchema.safeParse(value).success;
 }
 
 export function isBridgeEventMessage(value: unknown): value is BridgeEventMessage {
-  return (
-    isRecord(value) &&
-    value.type === "event" &&
-    isProtocolVersion(value.version) &&
-    isValidMethodName(value.name) &&
-    "payload" in value
-  );
+  return bridgeEventSchema.safeParse(value).success;
 }
 
 export function isValidId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 128;
+  return bridgeIdSchema.safeParse(value).success;
 }
 
 export function isValidMethodName(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 96 &&
-    /^[a-z][A-Za-z0-9._-]*$/.test(value)
-  );
+  return bridgeMethodNameSchema.safeParse(value).success;
 }
 
 export function assertValidOrigin(origin: string): void {
@@ -177,6 +167,19 @@ export function estimatePayloadBytes(value: unknown): number {
     return measurePayload(value, new WeakSet<object>(), 0);
   } catch {
     return Number.POSITIVE_INFINITY;
+  }
+}
+
+function requireOwnPayload(
+  value: { readonly payload?: unknown },
+  context: z.RefinementCtx,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(value, "payload")) {
+    context.addIssue({
+      code: "custom",
+      message: "payload is required",
+      path: ["payload"],
+    });
   }
 }
 

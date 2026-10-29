@@ -15,7 +15,7 @@ The bridge has two phases:
 1. `window.postMessage` performs the initial handshake.
 2. A transferred `MessageChannel` carries all subsequent requests, responses, events, cancellation, and termination messages.
 
-The host is the security authority. The game-side client is only a typed convenience wrapper and must not be treated as a security boundary.
+The host is the security authority. The game-side client is only a typed convenience wrapper and must not be treated as a security boundary. Runtime protocol messages are validated with strict Zod schemas; payload size estimation and browser-origin checks remain separate runtime controls.
 
 ## 2. Installation and build
 
@@ -278,7 +278,11 @@ The exact policy may need to be relaxed for a specific engine, but every relaxat
 - Dedicated Worker support and Service Worker denial must be verified in the target browsers.
 - Host method handlers are trusted host code; their own authorization logic is outside this package.
 
-## 10. Error handling
+## 10. Validation and error handling
+
+The bridge uses strict Zod schemas for protocol envelopes. Unknown envelope fields, missing required fields, unsupported protocol versions, and contradictory response fields are rejected before a host method is invoked. Zod validates message shape; it does not replace origin/source checks, capability checks, payload limits, rate limits, or host-side authorization.
+
+## 11. Error handling
 
 Errors are reported as `SandboxBridgeError`:
 
@@ -295,7 +299,7 @@ Errors are reported as `SandboxBridgeError`:
 | `DUPLICATE_REQUEST` | Request ID was already used |
 | `INTERNAL_ERROR` | Host handler failed; internal details are not exposed |
 
-## 11. Protocol invariants
+## 12. Protocol invariants
 
 - Protocol version is currently `1`.
 - Request IDs are single-use for the lifetime of a host session.
