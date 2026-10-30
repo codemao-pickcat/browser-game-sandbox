@@ -296,6 +296,29 @@ test("enforces request rate limits", async () => {
   host.terminate();
 });
 
+test("counts duplicate request errors against the rate limit", async () => {
+  const { client, host, channels } = await connect({ maxRequestsPerSecond: 1 });
+  const gamePort = channels[0].port2;
+  const request = {
+    type: "request",
+    version: 1,
+    id: "duplicate-rate-limit",
+    method: "sandbox.ping",
+    payload: {},
+  };
+
+  gamePort.postMessage(request);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  gamePort.postMessage(request);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    client.call("sandbox.ping", {}),
+    (error) => error instanceof SandboxBridgeError && error.code === "RATE_LIMITED",
+  );
+  host.terminate();
+});
+
 test("rejects a correct-origin handshake from the wrong window", async () => {
   const harness = createHarness({ autoReady: false, deliverParentMessages: false });
   harness.host.connected.catch(() => {});
@@ -667,6 +690,50 @@ test("rejects an init when the transferred port cannot send ready", async () => 
   harness.host.terminate();
 });
 
+test("rejects sparse arrays before invoking a handler", async () => {
+  let calls = 0;
+  const { host, channels } = await connect({
+    maxPayloadBytes: 64,
+    methods: {
+      "test.sparse": {
+        handler: () => {
+          calls += 1;
+          return true;
+        },
+      },
+    },
+  });
+
+  channels[0].port2.postMessage({
+    type: "request",
+    version: 1,
+    id: "sparse",
+    method: "test.sparse",
+    payload: new Array(1_000_000),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls, 0);
+  host.terminate();
+});
+
+test("accepts shared references without treating them as cycles", async () => {
+  const { client, host } = await connect({
+    methods: {
+      "test.shared": {
+        handler: () => ({ ok: true }),
+      },
+    },
+  });
+  const shared = { value: "ok" };
+
+  assert.deepEqual(
+    await client.call("test.shared", { first: shared, second: shared }),
+    { ok: true },
+  );
+  host.terminate();
+});
+
 test("counts Map payloads instead of allowing structured-clone size bypass", async () => {
   let calls = 0;
   const { host, channels } = await connect({
@@ -747,6 +814,37 @@ test("enforces plugin method payload and timeout limits", async () => {
   host.terminate();
 });
 
+test("expires remembered request IDs after the configured TTL", async () => {
+  let calls = 0;
+  const { host, channels } = await connect({
+    maxRequestIds: 1,
+    requestIdTtlMs: 10,
+    methods: {
+      "test.once": {
+        handler: () => {
+          calls += 1;
+          return true;
+        },
+      },
+    },
+  });
+
+  const gamePort = channels[0].port2;
+  for (const id of ["id-1", "id-2"]) {
+    gamePort.postMessage({
+      type: "request",
+      version: 1,
+      id,
+      method: "test.once",
+      payload: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, id === "id-1" ? 20 : 0));
+  }
+
+  assert.equal(calls, 2);
+  host.terminate();
+});
+
 test("caps remembered request IDs to prevent long-session memory growth", async () => {
   let calls = 0;
   const { host, channels } = await connect({
@@ -818,6 +916,30 @@ test("caps concurrent requests even when handlers never resolve", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(calls, 1);
+  host.terminate();
+});
+
+test("awaits async validators before invoking handlers", async () => {
+  let calls = 0;
+  const { client, host } = await connect({
+    methods: {
+      "test.asyncValidate": {
+        validate: async () => {
+          throw new Error("reject me");
+        },
+        handler: () => {
+          calls += 1;
+          return true;
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    client.call("test.asyncValidate", {}),
+    (error) => error instanceof SandboxBridgeError && error.code === "INVALID_PAYLOAD",
+  );
+  assert.equal(calls, 0);
   host.terminate();
 });
 

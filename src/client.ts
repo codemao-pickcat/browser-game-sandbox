@@ -88,7 +88,7 @@ export class SandboxBridgeClient {
       );
     }
 
-    const payloadBytes = estimatePayloadBytes(payload);
+    const payloadBytes = estimatePayloadBytes(payload, this.maxPayloadBytes);
     if (payloadBytes > this.maxPayloadBytes) {
       return Promise.reject(
         new SandboxBridgeError(
@@ -204,8 +204,8 @@ export class SandboxBridgeClient {
 
     if (isBridgeResponseMessage(message)) {
       const responseSize = message.ok
-        ? estimatePayloadBytes(message.payload)
-        : estimatePayloadBytes(message.error);
+        ? estimatePayloadBytes(message.payload, this.maxPayloadBytes)
+        : estimatePayloadBytes(message.error, this.maxPayloadBytes);
       if (responseSize > this.maxPayloadBytes) {
         this.close("Inbound response exceeded the payload limit");
         return;
@@ -215,7 +215,7 @@ export class SandboxBridgeClient {
     }
 
     if (isBridgeEventMessage(message)) {
-      if (estimatePayloadBytes(message.payload) > this.maxPayloadBytes) {
+      if (estimatePayloadBytes(message.payload, this.maxPayloadBytes) > this.maxPayloadBytes) {
         this.close("Inbound event exceeded the payload limit");
         return;
       }
@@ -332,7 +332,10 @@ export function acceptSandboxBridge(
       try {
         const client = new SandboxBridgeClient(port, {
           ...clientOptions,
-          maxPayloadBytes: event.data.maxPayloadBytes,
+          maxPayloadBytes: Math.min(
+            clientOptions.maxPayloadBytes ?? event.data.maxPayloadBytes,
+            event.data.maxPayloadBytes,
+          ),
         });
         client.sendReady();
         resolve(client);

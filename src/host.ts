@@ -3,8 +3,10 @@ import {
   DEFAULT_MAX_REQUESTS_PER_SECOND,
   DEFAULT_MAX_CONCURRENT_REQUESTS,
   DEFAULT_MAX_REQUEST_IDS,
+  DEFAULT_REQUEST_ID_TTL_MS,
   DEFAULT_HANDSHAKE_TIMEOUT_MS,
   PROTOCOL_VERSION,
+  bridgeInitSchema,
   assertValidOrigin,
   estimatePayloadBytes,
   isBridgeCancelMessage,
@@ -41,7 +43,7 @@ export interface HostMethodDefinition {
   readonly maxPayloadBytes?: number;
   readonly maxConcurrent?: number;
   readonly timeoutMs?: number;
-  readonly validate?: (payload: unknown) => void;
+  readonly validate?: (payload: unknown) => void | Promise<void>;
   readonly handler: (payload: unknown, context: HostMethodContext) => unknown | Promise<unknown>;
 }
 
@@ -56,6 +58,7 @@ export interface SandboxHostOptions {
   readonly maxRequestsPerSecond?: number;
   readonly maxConcurrentRequests?: number;
   readonly maxRequestIds?: number;
+  readonly requestIdTtlMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly channelFactory?: MessageChannelFactory;
   readonly onRequestClose?: (reason: string) => void;
@@ -75,13 +78,15 @@ export class SandboxHostSession {
   private readonly maxRequestsPerSecond: number;
   private readonly maxConcurrentRequests: number;
   private readonly maxRequestIds: number;
+  private readonly requestIdTtlMs: number;
   private readonly channelFactory: MessageChannelFactory;
   private readonly onMessage = (event: HostMessageEventLike) =>
     this.handleWindowMessage(event);
   private readonly requestControllers = new Map<string, AbortController>();
   private readonly activeMethodRequests = new Map<string, number>();
-  private readonly seenRequestIds = new Set<string>();
+  private readonly seenRequestIds = new Map<string, number>();
   private readonly requestTimestamps: number[] = [];
+  private readonly handshakeTimestamps: number[] = [];
   private readonly handshakeTimeoutMs: number;
   private handshakeTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly resolveConnected: () => void;
@@ -100,6 +105,7 @@ export class SandboxHostSession {
     this.maxConcurrentRequests =
       options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
     this.maxRequestIds = options.maxRequestIds ?? DEFAULT_MAX_REQUEST_IDS;
+    this.requestIdTtlMs = options.requestIdTtlMs ?? DEFAULT_REQUEST_ID_TTL_MS;
     this.handshakeTimeoutMs =
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.maxPayloadBytes) || this.maxPayloadBytes <= 0) {
@@ -114,10 +120,21 @@ export class SandboxHostSession {
     if (!Number.isSafeInteger(this.maxRequestIds) || this.maxRequestIds <= 0) {
       throw new TypeError("maxRequestIds must be a positive safe integer");
     }
+    if (!Number.isFinite(this.requestIdTtlMs) || this.requestIdTtlMs <= 0) {
+      throw new TypeError("requestIdTtlMs must be positive");
+    }
     if (!Number.isFinite(this.handshakeTimeoutMs) || this.handshakeTimeoutMs <= 0) {
       throw new TypeError("handshakeTimeoutMs must be positive");
     }
     this.channelFactory = options.channelFactory ?? browserMessageChannelFactory;
+    if (!bridgeInitSchema.safeParse({
+      type: "sandbox:init",
+      version: PROTOCOL_VERSION,
+      capabilities: this.capabilities,
+      maxPayloadBytes: this.maxPayloadBytes,
+    }).success) {
+      throw new TypeError("capabilities exceed the bridge init limits");
+    }
 
     let resolveConnected!: () => void;
     let rejectConnected!: (reason: unknown) => void;
@@ -268,7 +285,17 @@ export class SandboxHostSession {
   private handlePortMessage(message: unknown): void {
     if (this.state === "terminated") return;
 
-    if (this.state === "handshaking" && isBridgeReadyMessage(message)) {
+    if (this.state === "handshaking") {
+      if (!this.allowHandshakeMessage()) {
+        this.terminate("Sandbox handshake message rate exceeded");
+        return;
+      }
+      const handshakePayloadLimit = Math.max(this.maxPayloadBytes, 1_024);
+      if (estimatePayloadBytes(message, handshakePayloadLimit) > handshakePayloadLimit) {
+        this.terminate("Sandbox handshake message exceeded the payload limit");
+        return;
+      }
+      if (!isBridgeReadyMessage(message)) return;
       if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
       this.handshakeTimer = undefined;
       this.state = "connected";
@@ -293,18 +320,18 @@ export class SandboxHostSession {
   private async handleRequest(message: BridgeRequestMessage): Promise<void> {
     if (!this.port || this.state !== "connected") return;
 
+    const now = Date.now();
+    this.expireRequestIds(now);
+    if (!this.allowRequest()) {
+      this.sendError(message.id, "RATE_LIMITED", "Request rate exceeded");
+      return;
+    }
     if (this.seenRequestIds.has(message.id)) {
       this.sendError(message.id, "DUPLICATE_REQUEST", "Request ID has already been used");
       return;
     }
     if (this.seenRequestIds.size >= this.maxRequestIds) {
       this.sendError(message.id, "RATE_LIMITED", "Request ID budget exhausted");
-      return;
-    }
-    this.seenRequestIds.add(message.id);
-
-    if (!this.allowRequest()) {
-      this.sendError(message.id, "RATE_LIMITED", "Request rate exceeded");
       return;
     }
 
@@ -324,18 +351,11 @@ export class SandboxHostSession {
       return;
     }
 
-    try {
-      method.validate?.(message.payload);
-    } catch (error) {
-      this.sendError(message.id, "INVALID_PAYLOAD", "Invalid payload");
-      return;
-    }
-
     const methodPayloadLimit = Math.min(
       this.maxPayloadBytes,
       method.maxPayloadBytes ?? this.maxPayloadBytes,
     );
-    if (estimatePayloadBytes(message.payload) > methodPayloadLimit) {
+    if (estimatePayloadBytes(message.payload, methodPayloadLimit) > methodPayloadLimit) {
       this.sendError(message.id, "INVALID_PAYLOAD", "Payload exceeds the configured limit");
       return;
     }
@@ -343,6 +363,18 @@ export class SandboxHostSession {
     const activeForMethod = this.activeMethodRequests.get(message.method) ?? 0;
     if (method.maxConcurrent !== undefined && activeForMethod >= method.maxConcurrent) {
       this.sendError(message.id, "RATE_LIMITED", "Method concurrency limit exceeded");
+      return;
+    }
+    this.seenRequestIds.set(message.id, now);
+
+    try {
+      const validation = method.validate?.(message.payload);
+      if (validation && typeof (validation as PromiseLike<void>).then === "function") {
+        await validation;
+      }
+    } catch {
+      this.seenRequestIds.delete(message.id);
+      this.sendError(message.id, "INVALID_PAYLOAD", "Invalid payload");
       return;
     }
 
@@ -371,7 +403,7 @@ export class SandboxHostSession {
               }, method.timeoutMs);
             }),
           ]));
-      if (estimatePayloadBytes(payload) > methodPayloadLimit) {
+      if (estimatePayloadBytes(payload, methodPayloadLimit) > methodPayloadLimit) {
         this.sendError(message.id, "INVALID_PAYLOAD", "Response exceeds the configured limit");
         return;
       }
@@ -417,18 +449,34 @@ export class SandboxHostSession {
   }
 
   private allowRequest(): boolean {
+    return this.allowRate(this.requestTimestamps);
+  }
+
+  private allowHandshakeMessage(): boolean {
+    return this.allowRate(this.handshakeTimestamps);
+  }
+
+  private allowRate(timestamps: number[]): boolean {
     const now = Date.now();
-    while (this.requestTimestamps[0] !== undefined && now - this.requestTimestamps[0] >= 1_000) {
-      this.requestTimestamps.shift();
+    while (timestamps[0] !== undefined && now - timestamps[0] >= 1_000) {
+      timestamps.shift();
     }
-    if (this.requestTimestamps.length >= this.maxRequestsPerSecond) return false;
-    this.requestTimestamps.push(now);
+    if (timestamps.length >= this.maxRequestsPerSecond) return false;
+    timestamps.push(now);
     return true;
   }
 
   private assertPayloadSize(payload: unknown): void {
-    if (estimatePayloadBytes(payload) > this.maxPayloadBytes) {
+    if (estimatePayloadBytes(payload, this.maxPayloadBytes) > this.maxPayloadBytes) {
       throw new SandboxBridgeError("INVALID_PAYLOAD", "Payload exceeds the configured limit");
+    }
+  }
+
+  private expireRequestIds(now: number): void {
+    for (const [id, timestamp] of this.seenRequestIds) {
+      if (now - timestamp >= this.requestIdTtlMs) {
+        this.seenRequestIds.delete(id);
+      }
     }
   }
 
