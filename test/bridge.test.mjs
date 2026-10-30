@@ -859,6 +859,43 @@ test("expires remembered request IDs after the configured TTL", async () => {
   host.terminate();
 });
 
+test("does not expire an active request ID", async () => {
+  let calls = 0;
+  let release;
+  const { host, channels } = await connect({
+    maxRequestIds: 1,
+    requestIdTtlMs: 10,
+    methods: {
+      "test.wait": {
+        handler: () => {
+          calls += 1;
+          return new Promise((resolve) => {
+            release = resolve;
+          });
+        },
+      },
+    },
+  });
+
+  const request = {
+    type: "request",
+    version: 1,
+    id: "active-id",
+    method: "test.wait",
+    payload: {},
+  };
+  channels[0].port2.postMessage(request);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  channels[0].port2.postMessage(request);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls, 1);
+  release(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  host.terminate();
+});
+
 test("caps remembered request IDs to prevent long-session memory growth", async () => {
   let calls = 0;
   const { host, channels } = await connect({

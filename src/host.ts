@@ -488,7 +488,10 @@ export class SandboxHostSession {
 
   private expireRequestIds(now: number): void {
     for (const [id, timestamp] of this.seenRequestIds) {
-      if (now - timestamp >= this.requestIdTtlMs) {
+      if (
+        !this.requestControllers.has(id) &&
+        now - timestamp >= this.requestIdTtlMs
+      ) {
         this.seenRequestIds.delete(id);
       }
     }
