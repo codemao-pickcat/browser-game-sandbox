@@ -156,18 +156,63 @@ export function isValidMethodName(value: unknown): value is string {
 }
 
 export function assertValidOrigin(origin: string): void {
-  const parsed = new URL(origin);
-  if (parsed.origin !== origin || !/^https?:$/.test(parsed.protocol)) {
-    throw new TypeError(`Expected an exact http(s) origin, received: ${origin}`);
-  }
+  assertOrigin(origin, /^https?:$/, "exact http(s) origin");
 }
 
-export function estimatePayloadBytes(value: unknown): number {
+export function assertValidNetworkOrigin(origin: string): void {
+  assertOrigin(origin, /^(https?|wss?):$/, "exact http(s)/ws(s) origin");
+}
+
+export function estimatePayloadBytes(
+  value: unknown,
+  maxBytes = Number.POSITIVE_INFINITY,
+): number {
   try {
-    return measurePayload(value, new WeakSet<object>(), 0);
+    if (!Number.isFinite(maxBytes) && maxBytes !== Number.POSITIVE_INFINITY) {
+      return Number.POSITIVE_INFINITY;
+    }
+    if (maxBytes < 0) return Number.POSITIVE_INFINITY;
+    return measurePayload(
+      value,
+      {
+        active: new WeakSet<object>(),
+        cache: new WeakMap<object, number>(),
+        maxBytes,
+        visitedEntries: 0,
+      },
+      0,
+    );
   } catch {
     return Number.POSITIVE_INFINITY;
   }
+}
+
+function assertOrigin(
+  origin: string,
+  protocolPattern: RegExp,
+  description: string,
+): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new TypeError(`Expected an ${description}, received: ${origin}`);
+  }
+
+  if (
+    parsed.origin !== origin ||
+    !protocolPattern.test(parsed.protocol) ||
+    !isSafeOriginHostname(parsed.hostname)
+  ) {
+    throw new TypeError(`Expected an ${description}, received: ${origin}`);
+  }
+}
+
+function isSafeOriginHostname(hostname: string): boolean {
+  if (hostname.startsWith("[")) {
+    return /^\[[0-9A-Fa-f:.]+\]$/.test(hostname);
+  }
+  return /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(hostname);
 }
 
 function requireOwnPayload(
@@ -183,60 +228,135 @@ function requireOwnPayload(
   }
 }
 
+const payloadEncoder = new TextEncoder();
+const MAX_PAYLOAD_DEPTH = 64;
+const MAX_PAYLOAD_ENTRIES = 100_000;
+
+type PayloadMeasureContext = {
+  readonly active: WeakSet<object>;
+  readonly cache: WeakMap<object, number>;
+  readonly maxBytes: number;
+  visitedEntries: number;
+};
+
 function measurePayload(
   value: unknown,
-  seen: WeakSet<object>,
+  context: PayloadMeasureContext,
   depth: number,
 ): number {
-  if (depth > 64) return Number.POSITIVE_INFINITY;
+  if (depth > MAX_PAYLOAD_DEPTH) return Number.POSITIVE_INFINITY;
   if (value === null || value === undefined) return 0;
-  if (typeof value === "string") return new TextEncoder().encode(value).byteLength;
+  if (typeof value === "string") return payloadEncoder.encode(value).byteLength;
   if (typeof value === "boolean") return 1;
   if (typeof value === "number") return 8;
   if (typeof value === "bigint") return 16;
   if (typeof value !== "object") return Number.POSITIVE_INFINITY;
 
-  if (seen.has(value)) return Number.POSITIVE_INFINITY;
-  seen.add(value);
+  const cached = context.cache.get(value);
+  if (cached !== undefined) return cached;
+  if (context.active.has(value)) return Number.POSITIVE_INFINITY;
+  context.active.add(value);
 
-  if (value instanceof ArrayBuffer) return value.byteLength;
-  if (ArrayBuffer.isView(value)) return value.byteLength;
-  if (typeof Blob !== "undefined" && value instanceof Blob) return value.size;
-  if (value instanceof Date || value instanceof RegExp) {
-    return new TextEncoder().encode(String(value)).byteLength;
-  }
+  let total: number;
+  try {
+    if (value instanceof ArrayBuffer) {
+      total = value.byteLength;
+    } else if (ArrayBuffer.isView(value)) {
+      total = value.byteLength;
+    } else if (typeof Blob !== "undefined" && value instanceof Blob) {
+      total = value.size;
+    } else if (value instanceof Date || value instanceof RegExp) {
+      total = payloadEncoder.encode(String(value)).byteLength;
+    } else if (value instanceof Map) {
+      total = 0;
+      if (value.size > MAX_PAYLOAD_ENTRIES) return Number.POSITIVE_INFINITY;
+      Map.prototype.forEach.call(value, (entry: unknown, key: unknown) => {
+        if (!Number.isFinite(total)) return;
+        total = addMeasuredValue(total, 1, context.maxBytes);
+        total = addMeasuredValue(
+          total,
+          measurePayload(key, context, depth + 1),
+          context.maxBytes,
+        );
+        total = addMeasuredValue(
+          total,
+          measurePayload(entry, context, depth + 1),
+          context.maxBytes,
+        );
+      });
+    } else if (value instanceof Set) {
+      if (value.size > MAX_PAYLOAD_ENTRIES) return Number.POSITIVE_INFINITY;
+      total = 0;
+      Set.prototype.forEach.call(value, (entry: unknown) => {
+        if (!Number.isFinite(total)) return;
+        total = addMeasuredValue(total, 1, context.maxBytes);
+        total = addMeasuredValue(
+          total,
+          measurePayload(entry, context, depth + 1),
+          context.maxBytes,
+        );
+      });
+    } else if (Array.isArray(value)) {
+      if (value.length > MAX_PAYLOAD_ENTRIES) return Number.POSITIVE_INFINITY;
+      total = 0;
+      for (let index = 0; index < value.length; index += 1) {
+        context.visitedEntries += 1;
+        if (context.visitedEntries > MAX_PAYLOAD_ENTRIES) {
+          return Number.POSITIVE_INFINITY;
+        }
+        total = addMeasuredValue(total, 1, context.maxBytes);
+        if (!Number.isFinite(total)) return Number.POSITIVE_INFINITY;
+        if (Object.prototype.hasOwnProperty.call(value, index)) {
+          total = addMeasuredValue(
+            total,
+            measurePayload(value[index], context, depth + 1),
+            context.maxBytes,
+          );
+          if (!Number.isFinite(total)) return Number.POSITIVE_INFINITY;
+        }
+      }
+    } else {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        return Number.POSITIVE_INFINITY;
+      }
 
-  if (value instanceof Map) {
-    let total = 0;
-    for (const [key, entry] of value) {
-      total += measurePayload(key, seen, depth + 1);
-      total += measurePayload(entry, seen, depth + 1);
+      total = 0;
+      const record = value as Record<string, unknown>;
+      for (const key of Object.keys(record)) {
+        context.visitedEntries += 1;
+        if (context.visitedEntries > MAX_PAYLOAD_ENTRIES) {
+          return Number.POSITIVE_INFINITY;
+        }
+        total = addMeasuredValue(
+          total,
+          payloadEncoder.encode(key).byteLength,
+          context.maxBytes,
+        );
+        if (!Number.isFinite(total)) return Number.POSITIVE_INFINITY;
+        total = addMeasuredValue(
+          total,
+          measurePayload(record[key], context, depth + 1),
+          context.maxBytes,
+        );
+        if (!Number.isFinite(total)) return Number.POSITIVE_INFINITY;
+      }
     }
-    return total;
+  } finally {
+    context.active.delete(value);
   }
 
-  if (value instanceof Set) {
-    let total = 0;
-    for (const entry of value) total += measurePayload(entry, seen, depth + 1);
-    return total;
-  }
-
-  if (Array.isArray(value)) {
-    let total = 0;
-    for (const entry of value) total += measurePayload(entry, seen, depth + 1);
-    return total;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    return Number.POSITIVE_INFINITY;
-  }
-
-  let total = 0;
-  const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    total += new TextEncoder().encode(key).byteLength;
-    total += measurePayload(record[key], seen, depth + 1);
-  }
+  if (total > context.maxBytes) return Number.POSITIVE_INFINITY;
+  context.cache.set(value, total);
   return total;
+}
+
+function addMeasuredValue(
+  total: number,
+  value: number,
+  maxBytes: number,
+): number {
+  if (!Number.isFinite(value)) return Number.POSITIVE_INFINITY;
+  const next = total + value;
+  return next > maxBytes ? Number.POSITIVE_INFINITY : next;
 }

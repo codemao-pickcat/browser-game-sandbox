@@ -1,4 +1,7 @@
-import { assertValidOrigin } from "./protocol.js";
+import {
+  assertValidNetworkOrigin,
+  assertValidOrigin,
+} from "./protocol.js";
 
 export const BROWSER_CAPABILITIES = {
   localStorage: "browser.storage.local",
@@ -34,6 +37,7 @@ export type BrowserCapability =
 export type BrowserCapabilityEnforcement =
   | "enforced"
   | "declarative"
+  | "not-enforceable"
   | "not-granted";
 
 export interface BrowserPolicyOptions {
@@ -112,8 +116,20 @@ export function assertBrowserCapabilities(
 export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy {
   assertValidOrigin(options.gameOrigin);
   assertBrowserCapabilities(options.capabilities);
-  for (const origin of options.hostOrigins ?? []) assertValidOrigin(origin);
-  for (const origin of options.networkOrigins ?? []) assertNetworkOrigin(origin);
+  for (const origin of options.hostOrigins ?? []) {
+    assertValidOrigin(origin);
+    if (origin === options.gameOrigin) {
+      throw new TypeError("gameOrigin must be cross-origin from hostOrigins");
+    }
+  }
+  for (const origin of options.networkOrigins ?? []) {
+    assertValidNetworkOrigin(origin);
+  }
+  for (const nonce of options.scriptNonces ?? []) {
+    if (!/^[A-Za-z0-9+/=_-]{16,}$/.test(nonce)) {
+      throw new TypeError("scriptNonces must contain base64-like values without delimiters");
+    }
+  }
 
   const granted = new Set(options.capabilities);
   const warnings: string[] = [];
@@ -169,7 +185,7 @@ export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy
 
   const permissionsPolicy = permissionPolicyFeatures
     .map(([feature, capability]) =>
-      `${feature}=${granted.has(capability) ? `(${options.gameOrigin})` : "()"}`,
+      `${feature}=${granted.has(capability) ? `("${options.gameOrigin}")` : "()"}`,
     )
     .join(", ");
 
@@ -188,9 +204,19 @@ export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy
 
   const enforcement = {} as Record<BrowserCapability, BrowserCapabilityEnforcement>;
   for (const capability of Object.values(BROWSER_CAPABILITIES)) {
-    enforcement[capability] = granted.has(capability)
-      ? enforcementByCapability[capability]
-      : "not-granted";
+    if (!granted.has(capability)) {
+      enforcement[capability] = "not-granted";
+    } else if (
+      capability === BROWSER_CAPABILITIES.localStorage ||
+      capability === BROWSER_CAPABILITIES.indexedDb ||
+      capability === BROWSER_CAPABILITIES.webgl ||
+      capability === BROWSER_CAPABILITIES.webAudio ||
+      capability === BROWSER_CAPABILITIES.webRtc
+    ) {
+      enforcement[capability] = "not-enforceable";
+    } else {
+      enforcement[capability] = enforcementByCapability[capability];
+    }
   }
 
   return {
@@ -244,9 +270,3 @@ function addIframeAllow(
   if (granted.has(capability)) output.push(`${feature} ${gameOrigin}`);
 }
 
-function assertNetworkOrigin(origin: string): void {
-  const parsed = new URL(origin);
-  if (parsed.origin !== origin || !/^(https?|wss?):$/.test(parsed.protocol)) {
-    throw new TypeError(`Expected an exact http(s)/ws(s) origin, received: ${origin}`);
-  }
-}

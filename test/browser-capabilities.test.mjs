@@ -16,10 +16,11 @@ test("builds an enforceable baseline browser policy", () => {
       BROWSER_CAPABILITIES.dedicatedWorker,
       BROWSER_CAPABILITIES.wasm,
       BROWSER_CAPABILITIES.camera,
+      BROWSER_CAPABILITIES.webAudio,
       BROWSER_CAPABILITIES.networkConnect,
     ],
     networkOrigins: ["https://api.example.test"],
-    scriptNonces: ["nonce-value"],
+    scriptNonces: ["nonce-value-123456"],
   });
 
   assert.deepEqual(policy.sandboxTokens, ["allow-scripts", "allow-same-origin"]);
@@ -27,9 +28,10 @@ test("builds an enforceable baseline browser policy", () => {
   assert.match(policy.contentSecurityPolicy, /wasm-unsafe-eval/);
   assert.match(policy.contentSecurityPolicy, /connect-src 'self' https:\/\/api\.example\.test/);
   assert.match(policy.contentSecurityPolicy, /frame-ancestors https:\/\/host\.example\.test/);
-  assert.match(policy.permissionsPolicy, /camera=\(https:\/\/game\.example\.test\)/);
+  assert.match(policy.permissionsPolicy, /camera=\("https:\/\/game\.example\.test"\)/);
   assert.equal(policy.enforcement[BROWSER_CAPABILITIES.dedicatedWorker], "enforced");
   assert.equal(policy.enforcement[BROWSER_CAPABILITIES.webgl], "not-granted");
+  assert.equal(policy.enforcement[BROWSER_CAPABILITIES.webAudio], "not-enforceable");
 });
 
 test("keeps Service Worker denial separate from Blob Worker support", () => {
@@ -46,6 +48,32 @@ test("keeps Service Worker denial separate from Blob Worker support", () => {
   });
   assert.match(granted.contentSecurityPolicy, /worker-src 'self' blob:/);
   assert.ok(granted.warnings.some((warning) => warning.includes("Service Worker")));
+});
+
+test("rejects unsafe policy delimiters and overlapping origins", () => {
+  assert.throws(
+    () => buildBrowserPolicy({
+      gameOrigin: "https://game.example.test,connect-src *",
+      capabilities: [],
+    }),
+    /exact http\(s\) origin/,
+  );
+  assert.throws(
+    () => buildBrowserPolicy({
+      gameOrigin: GAME_ORIGIN,
+      hostOrigins: [GAME_ORIGIN],
+      capabilities: [],
+    }),
+    /cross-origin/,
+  );
+  assert.throws(
+    () => buildBrowserPolicy({
+      gameOrigin: GAME_ORIGIN,
+      capabilities: [],
+      scriptNonces: ["unsafe; connect-src *"],
+    }),
+    /scriptNonces/,
+  );
 });
 
 test("fails closed for unknown capabilities and network origins", () => {
