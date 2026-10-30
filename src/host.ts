@@ -248,6 +248,12 @@ export class SandboxHostSession {
       this.port = undefined;
     }
 
+    try {
+      this.options.iframe.remove?.();
+    } catch {
+      // Removing the iframe is best-effort; bridge cleanup still completes.
+    }
+
     if (!this.connectedSettled) {
       this.connectedSettled = true;
       this.rejectConnected(new BridgeClosedError(reason));

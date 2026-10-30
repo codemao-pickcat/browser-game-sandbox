@@ -279,7 +279,7 @@ session.emit("example.event", { value: "hello" });
 session.terminate("宿主终止了沙箱");
 ```
 
-终止会发送 `sandbox.terminated`，关闭端口，拒绝所有 pending 请求，并移除宿主的 message listener。游戏侧事件处理器不能阻止桥接清理。
+终止会发送 `sandbox.terminated`，关闭端口，拒绝所有 pending 请求，移除宿主的 message listener，并在传入的 iframe 支持 `remove()` 时尽力移除它。它不会擦除 origin 持久化存储或注销 Service Worker；这些需要单独的清理策略。游戏侧事件处理器不能阻止桥接清理。
 
 ## 8. 内置方法
 

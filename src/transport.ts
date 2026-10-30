@@ -39,6 +39,7 @@ export interface GameWindowLike extends HostWindowLike {
 
 export interface IframeLike {
   readonly contentWindow: MessageTargetLike | null;
+  readonly remove?: () => void;
 }
 
 export interface MessageChannelLike {

@@ -279,7 +279,7 @@ Terminate the sandbox:
 session.terminate("Host revoked the sandbox");
 ```
 
-Termination sends `sandbox.terminated`, closes the port, rejects pending calls, and removes the host message listener. A game-side termination handler cannot prevent bridge cleanup.
+Termination sends `sandbox.terminated`, closes the port, rejects pending calls, removes the host message listener, and best-effort removes the iframe when the supplied iframe supports `remove()`. It does not erase origin-persistent storage or unregister a Service Worker; those require a separate cleanup policy. A game-side termination handler cannot prevent bridge cleanup.
 
 ## 8. Built-in methods
 

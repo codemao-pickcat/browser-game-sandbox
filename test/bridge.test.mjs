@@ -62,6 +62,7 @@ function createHarness(options = {}) {
   const {
     autoReady = true,
     deliverParentMessages = true,
+    onRemove,
     ...hostOptions
   } = options;
   const channels = [];
@@ -99,7 +100,7 @@ function createHarness(options = {}) {
 
   const host = new SandboxHostSession({
     window: hostWindow,
-    iframe: { contentWindow: gameTarget },
+    iframe: { contentWindow: gameTarget, remove: onRemove },
     gameOrigin: GAME_ORIGIN,
     channelFactory: () => {
       const channel = fakeChannelFactory();
@@ -259,6 +260,14 @@ test("cancels an in-flight call and propagates abort to the host", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(hostAborted, true);
   host.terminate();
+});
+
+test("removes the iframe when the host terminates", () => {
+  let removed = false;
+  const harness = createHarness({ onRemove: () => { removed = true; } });
+  harness.host.connected.catch(() => {});
+  harness.host.terminate();
+  assert.equal(removed, true);
 });
 
 test("rejects pending calls when the host terminates", async () => {
