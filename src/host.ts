@@ -44,6 +44,7 @@ export interface HostMethodDefinition {
   readonly maxConcurrent?: number;
   readonly timeoutMs?: number;
   readonly validate?: (payload: unknown) => void | Promise<void>;
+  readonly parse?: (payload: unknown) => unknown | Promise<unknown>;
   readonly handler: (payload: unknown, context: HostMethodContext) => unknown | Promise<unknown>;
 }
 
@@ -367,10 +368,15 @@ export class SandboxHostSession {
     }
     this.seenRequestIds.set(message.id, now);
 
+    let handlerPayload = message.payload;
     try {
-      const validation = method.validate?.(message.payload);
-      if (validation && typeof (validation as PromiseLike<void>).then === "function") {
-        await validation;
+      if (method.parse) {
+        handlerPayload = await method.parse(message.payload);
+      } else {
+        const validation = method.validate?.(message.payload);
+        if (validation && typeof (validation as PromiseLike<void>).then === "function") {
+          await validation;
+        }
       }
     } catch {
       this.seenRequestIds.delete(message.id);
@@ -385,7 +391,7 @@ export class SandboxHostSession {
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const handlerPromise = method.handler(message.payload, {
+      const handlerPromise = method.handler(handlerPayload, {
         signal: controller.signal,
         capabilities: this.capabilities,
         requestId: message.id,

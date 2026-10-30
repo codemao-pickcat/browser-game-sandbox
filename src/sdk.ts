@@ -57,10 +57,15 @@ export type SandboxSdk<
 export function createSandboxSdk<
   const TPlugins extends Record<string, SandboxPluginContract>,
 >(transport: SandboxCallTransport, plugins: TPlugins): SandboxSdk<TPlugins> {
-  const sdk: Record<string, unknown> = {};
+  const sdk: Record<string, unknown> = Object.create(null);
 
   for (const [alias, plugin] of Object.entries(plugins)) {
-    if (alias in sdk) throw new TypeError(`Duplicate plugin alias: ${alias}`);
+    if (Object.prototype.hasOwnProperty.call(sdk, alias)) {
+      throw new TypeError(`Duplicate plugin alias: ${alias}`);
+    }
+    if (alias === "then") {
+      throw new TypeError("Plugin alias cannot be then");
+    }
     sdk[alias] = createPluginSdk(transport, plugin);
   }
 
@@ -71,10 +76,15 @@ export function createPluginSdk<TPlugin extends SandboxPluginContract>(
   transport: SandboxCallTransport,
   plugin: TPlugin,
 ): SandboxPluginSdk<TPlugin> {
-  const sdk: Record<string, unknown> = {};
+  const sdk: Record<string, unknown> = Object.create(null);
 
   for (const [methodName, method] of Object.entries(plugin.methods)) {
-    if (methodName in sdk) throw new TypeError(`Duplicate plugin method: ${methodName}`);
+    if (Object.prototype.hasOwnProperty.call(sdk, methodName)) {
+      throw new TypeError(`Duplicate plugin method: ${methodName}`);
+    }
+    if (methodName === "then") {
+      throw new TypeError("Plugin method cannot be then");
+    }
     sdk[methodName] = async (
       input: unknown,
       options?: BridgeCallOptions,

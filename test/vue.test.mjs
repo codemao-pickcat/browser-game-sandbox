@@ -35,6 +35,16 @@ function createFakeApp() {
   };
 }
 
+test("rejects unsafe Vue global property names", () => {
+  assert.throws(
+    () => createSandboxVuePlugin({
+      globalProperty: "__proto__",
+      transport: { call: async () => ({}) },
+    }),
+    /safe JavaScript property name/,
+  );
+});
+
 test("provides a preconfigured SDK to native Vue components", async () => {
   const config = defineSandboxVueConfig({
     plugins: { echo: echoPlugin },

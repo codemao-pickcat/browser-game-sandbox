@@ -1,3 +1,4 @@
+import { isValidMethodName } from "./protocol.js";
 import {
   pluginMethodName,
   type MethodInput,
@@ -28,6 +29,11 @@ export interface HostPlugin<TPlugin extends SandboxPluginContract> {
   readonly handlers: HostPluginHandlers<TPlugin>;
 }
 
+export interface ComposeHostPluginsOptions {
+  /** Capabilities explicitly granted by the trusted host. */
+  readonly grantedCapabilities?: readonly string[];
+}
+
 export interface ComposedHostPlugins {
   readonly capabilities: readonly string[];
   readonly methods: Readonly<Record<string, HostMethodDefinition>>;
@@ -42,10 +48,17 @@ export function createHostPlugin<TPlugin extends SandboxPluginContract>(
 
 export function composeHostPlugins(
   plugins: readonly HostPlugin<SandboxPluginContract>[],
+  options: ComposeHostPluginsOptions = {},
 ): ComposedHostPlugins {
-  const capabilities = new Set<string>();
-  const methods: Record<string, HostMethodDefinition> = {};
+  const declaredCapabilities = new Set<string>();
+  const methods: Record<string, HostMethodDefinition> = Object.create(null);
   const pluginIds = new Set<string>();
+
+  for (const capability of options.grantedCapabilities ?? []) {
+    if (!isValidMethodName(capability)) {
+      throw new TypeError(`Invalid granted capability: ${capability}`);
+    }
+  }
 
   for (const plugin of plugins) {
     const { contract, handlers } = plugin;
@@ -54,16 +67,23 @@ export function composeHostPlugins(
     }
     pluginIds.add(contract.id);
 
-    for (const capability of contract.capabilities) capabilities.add(capability);
+    for (const capability of contract.capabilities) {
+      if (!isValidMethodName(capability)) {
+        throw new TypeError(`Invalid plugin capability: ${capability}`);
+      }
+      declaredCapabilities.add(capability);
+    }
 
     for (const [methodName, method] of Object.entries(contract.methods)) {
       const fullName = pluginMethodName(contract.id, methodName);
-      if (methods[fullName]) {
+      if (Object.prototype.hasOwnProperty.call(methods, fullName)) {
         throw new TypeError(`Duplicate plugin method: ${fullName}`);
       }
-      if (method.capability) capabilities.add(method.capability);
+      if (method.capability) declaredCapabilities.add(method.capability);
 
-      const handler = handlers[methodName];
+      const handler = Object.prototype.hasOwnProperty.call(handlers, methodName)
+        ? handlers[methodName]
+        : undefined;
       if (!handler) {
         throw new TypeError(`Missing handler for plugin method: ${fullName}`);
       }
@@ -75,9 +95,11 @@ export function composeHostPlugins(
           const result = method.input.safeParse(payload);
           if (!result.success) throw new TypeError("Invalid plugin input");
         },
+        parse(payload) {
+          return method.input.parse(payload) as MethodInput<typeof method>;
+        },
         async handler(payload, context: HostMethodContext) {
-          const parsedInput = method.input.parse(payload) as MethodInput<typeof method>;
-          const output = await handler(parsedInput, {
+          const output = await handler(payload as MethodInput<typeof method>, {
             pluginId: contract.id,
             methodName: fullName,
             requestId: context.requestId,
@@ -90,5 +112,11 @@ export function composeHostPlugins(
     }
   }
 
-  return { capabilities: [...capabilities], methods };
+  const grantedCapabilities = new Set(options.grantedCapabilities ?? []);
+  return {
+    capabilities: [...declaredCapabilities].filter((capability) =>
+      grantedCapabilities.has(capability),
+    ),
+    methods,
+  };
 }

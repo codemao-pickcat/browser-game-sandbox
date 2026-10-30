@@ -55,7 +55,12 @@ export function defineSandboxPlugin<const TMethods extends SandboxPluginMethods>
   readonly capabilities?: readonly string[];
   readonly methods: TMethods;
 }): SandboxPluginContract<TMethods> {
-  assertPluginDefinition(definition.id, definition.methods);
+  assertPluginDefinition(
+    definition.id,
+    definition.version,
+    definition.capabilities ?? [],
+    definition.methods,
+  );
 
   const capabilities = new Set(definition.capabilities ?? []);
   for (const method of Object.values(definition.methods)) {
@@ -81,10 +86,22 @@ export function pluginMethodName(pluginId: string, methodName: string): string {
 
 function assertPluginDefinition(
   pluginId: string,
+  version: string,
+  capabilities: readonly string[],
   methods: SandboxPluginMethods,
 ): void {
   if (!isValidMethodName(pluginId)) {
     throw new TypeError(`Invalid plugin ID: ${pluginId}`);
+  }
+
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new TypeError(`Invalid plugin version: ${version}`);
+  }
+
+  for (const capability of capabilities) {
+    if (!isValidMethodName(capability)) {
+      throw new TypeError(`Invalid plugin capability: ${capability}`);
+    }
   }
 
   for (const [methodName, method] of Object.entries(methods)) {

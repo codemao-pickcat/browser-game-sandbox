@@ -183,8 +183,14 @@ function assertConfig<TPlugins extends SandboxVuePlugins>(
       "Sandbox Vue config requires bridge, bridgeOptions, transport, or sdk",
     );
   }
-  if (config.globalProperty !== undefined && config.globalProperty.length === 0) {
-    throw new TypeError("globalProperty must not be empty");
+  if (
+    config.globalProperty !== undefined &&
+    (!/^\$?[A-Za-z_][A-Za-z0-9_]*$/.test(config.globalProperty) ||
+      config.globalProperty === "__proto__" ||
+      config.globalProperty === "constructor" ||
+      config.globalProperty === "prototype")
+  ) {
+    throw new TypeError("globalProperty must be a safe JavaScript property name");
   }
 }
 

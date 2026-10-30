@@ -85,7 +85,9 @@ test("composes a host plugin into the existing host method seam", async () => {
         return input;
       },
     }),
-  ]);
+  ], {
+    grantedCapabilities: ["com.example.echo"],
+  });
 
   assert.deepEqual(composed.capabilities, ["com.example.echo"]);
   const method = composed.methods["com.example.echo.echo"];
@@ -104,6 +106,33 @@ test("composes a host plugin into the existing host method seam", async () => {
   assert.deepEqual(result, { value: "ok" });
   assert.equal(seen[0].context.pluginId, "com.example.echo");
   assert.equal(seen[0].context.requestId, "request-1");
+});
+
+test("rejects thenable SDK method names", () => {
+  const plugin = defineSandboxPlugin({
+    id: "com.example.thenable",
+    version: "1.0.0",
+    methods: {
+      then: defineMethod({
+        input: z.object({}),
+        output: z.object({ ok: z.boolean() }),
+      }),
+    },
+  });
+
+  assert.throws(
+    () => createSandboxSdk({ call: async () => ({ ok: true }) }, { plugin }),
+    /cannot be then/,
+  );
+});
+
+test("does not grant plugin capabilities without host approval", () => {
+  const plugin = makeEchoPlugin();
+  const composed = composeHostPlugins([
+    createHostPlugin(plugin, { echo: (input) => input }),
+  ]);
+
+  assert.deepEqual(composed.capabilities, []);
 });
 
 test("carries plugin method limits into the host adapter", () => {
@@ -129,6 +158,24 @@ test("carries plugin method limits into the host adapter", () => {
   assert.equal(method.maxPayloadBytes, 128);
   assert.equal(method.maxConcurrent, 2);
   assert.equal(method.timeoutMs, 1000);
+});
+
+test("rejects prototype-chain handler fallthrough", () => {
+  const plugin = defineSandboxPlugin({
+    id: "com.example.prototype",
+    version: "1.0.0",
+    methods: {
+      toString: defineMethod({
+        input: z.object({}),
+        output: z.object({ ok: z.boolean() }),
+      }),
+    },
+  });
+
+  assert.throws(
+    () => composeHostPlugins([createHostPlugin(plugin, {})]),
+    /Missing handler/,
+  );
 });
 
 test("rejects duplicate plugin IDs and duplicate full method names", () => {
