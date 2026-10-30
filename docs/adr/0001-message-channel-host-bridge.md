@@ -8,4 +8,4 @@ The bare sandbox communicates with its trusted host through a transferred `Messa
 
 The host is the security authority: it verifies the iframe source and exact origin during the handshake, validates every message and capability, enforces payload/rate/time limits, and can terminate the iframe. The TypeScript client package is only a typed convenience wrapper; it is not a security boundary.
 
-This preserves cross-origin isolation, keeps the runtime dependency-free, supports transferable browser data, and leaves future host integrations outside the bare sandbox protocol.
+This preserves cross-origin isolation, keeps platform integrations outside the bare sandbox protocol, supports transferable browser data, and leaves future host integrations outside the bare sandbox protocol. The protocol uses Zod for runtime envelope validation.

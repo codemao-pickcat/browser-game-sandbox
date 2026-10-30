@@ -166,7 +166,10 @@ const hostExtensions = composeHostPlugins([
   createHostPlugin(echoPlugin, {
     echo: async (input, context) => input,
   }),
-]);
+], {
+  // Only the trusted host decides which declared capabilities are granted.
+  grantedCapabilities: ["com.example.echo"],
+});
 
 const session = new SandboxHostSession({
   // ...
@@ -206,11 +209,13 @@ The host execution order is:
 
 ```text
 Protocol schema
+→ rate quota
+→ request ID replay/budget check
+→ global concurrency quota
 → method exists
 → capability granted by host
 → payload size
-→ request ID replay check
-→ rate/concurrency quota
+→ method concurrency quota
 → input schema
 → handler
 → output schema

@@ -93,19 +93,21 @@ session.start();
 await session.connected;
 ```
 
-`gameOrigin` 必须是精确的 `http` 或 `https` origin，包含协议和必要的端口。不能使用路径、通配符或 `*`。
+`gameOrigin` 必须是精确的 `http` 或 `https` origin，包含协议和必要的端口，并且必须与宿主页面跨源。不能使用路径、通配符、逗号、引号或 `*`。
 
 ### 宿主配置项
 
 | 配置项 | 默认值 | 含义 |
 | --- | ---: | --- |
-| `gameOrigin` | 必填 | 允许发起握手的精确 origin |
+| `gameOrigin` | 必填 | 允许发起握手的精确 origin，必须与宿主 origin 不同 |
+| `hostOrigin` | 自动推断 | 可显式指定宿主 origin；同源游戏配置会被拒绝 |
 | `capabilities` | `[]` | 授予已注册宿主方法的能力名称 |
 | `browserCapabilities` | `[]` | 声明浏览器能力 profile，必须与实际 iframe/CSP 策略一致 |
 | `maxPayloadBytes` | `65536` | 估算后的结构化克隆数据最大大小 |
 | `maxRequestsPerSecond` | `30` | 单个会话的请求速率限制 |
 | `maxConcurrentRequests` | `64` | 最大未完成宿主处理器数量 |
 | `maxRequestIds` | `10000` | 单个会话记忆的最大请求 ID 数量 |
+| `requestIdTtlMs` | `60000` | 请求 ID 保留时间 |
 | `handshakeTimeoutMs` | `5000` | 握手允许的最长时间 |
 
 ## 4. 游戏侧接入
@@ -394,13 +396,13 @@ network.websocket
 network.webrtc
 ```
 
-已测试的基线使用 `worker-src blob:` 允许 Blob Dedicated Worker，并拒绝 Service Worker。Storage、WebGL、WebAudio、WebRTC，以及 Dedicated/Shared Worker 的区分，在普通浏览器中属于声明性限制；policy builder 会报告警告，而不会假装提供硬隔离。
+已测试的基线使用 `worker-src blob:` 允许 Blob Dedicated Worker，并拒绝 Service Worker。Storage、WebGL、WebAudio、WebRTC，以及 Dedicated/Shared Worker 的区分，在普通浏览器中属于声明性限制；策略构建器会报告 `not-enforceable` 状态或警告，而不会假装提供硬隔离。
 
 ### 重要限制
 
 - 这是浏览器级边界，不是操作系统或容器级边界。
 - 桥接不提供通用网络代理。
-- `localStorage` 和 `IndexedDB` 是浏览器能力，不是可以按每次调用撤销的桥接 capability。
+- `localStorage` 和 `IndexedDB` 是浏览器能力，不是可以按每次调用撤销的桥接 capability；如果需要存储隔离，应为每个不可信游戏使用独立 game origin。
 - 只要沙箱内的代码拿到了 `MessagePort`，它就拥有与游戏相同的桥接权限；当前没有脚本级身份隔离。
 - Dedicated Worker 与禁止 Service Worker 的组合必须在目标浏览器中实际验证。
 - 宿主方法属于受信任宿主代码，其内部授权逻辑不属于本包负责范围。
@@ -429,7 +431,7 @@ network.webrtc
 ## 12. 协议不变量
 
 - 当前协议版本为 `1`。
-- 请求 ID 在一个宿主会话生命周期内只能使用一次。
+- 请求 ID 在配置的 TTL 内保留；重放保护是有界的，不是永久保留。
 - 一个宿主会话最多建立一个 `MessageChannel`。
 - 无效消息会被忽略或拒绝，不能调用宿主处理器。
 - 出站和入站 payload 都受大小限制。

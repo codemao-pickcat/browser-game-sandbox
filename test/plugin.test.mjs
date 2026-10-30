@@ -126,6 +126,36 @@ test("rejects thenable SDK method names", () => {
   );
 });
 
+test("parses plugin input once in the host adapter", async () => {
+  let transforms = 0;
+  const plugin = defineSandboxPlugin({
+    id: "com.example.transform",
+    version: "1.0.0",
+    methods: {
+      echo: defineMethod({
+        input: z.object({ value: z.string() }).transform((value) => {
+          transforms += 1;
+          return value;
+        }),
+        output: z.object({ value: z.string() }),
+      }),
+    },
+  });
+  const composed = composeHostPlugins([
+    createHostPlugin(plugin, { echo: (input) => input }),
+  ], { grantedCapabilities: [] });
+  const method = composed.methods["com.example.transform.echo"];
+  const parsed = await method.parse({ value: "ok" });
+  await method.handler(parsed, {
+    signal: new AbortController().signal,
+    capabilities: [],
+    requestId: "request-1",
+    methodName: "com.example.transform.echo",
+  });
+
+  assert.equal(transforms, 1);
+});
+
 test("does not grant plugin capabilities without host approval", () => {
   const plugin = makeEchoPlugin();
   const composed = composeHostPlugins([

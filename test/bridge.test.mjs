@@ -391,10 +391,24 @@ test("ignores malformed requests instead of invoking a host method", async () =>
   host.terminate();
 });
 
+test("rejects same-origin host and game configuration", () => {
+  assert.throws(
+    () => createHarness({ hostOrigin: GAME_ORIGIN }),
+    /gameOrigin must be cross-origin/,
+  );
+});
+
 test("rejects unknown browser capabilities at host construction", () => {
   assert.throws(
     () => createHarness({ browserCapabilities: ["browser.worker.unknown"] }),
     /Unknown browser capability/,
+  );
+});
+
+test("rejects host capabilities that cannot fit the init schema", () => {
+  assert.throws(
+    () => createHarness({ capabilities: Array.from({ length: 257 }, (_, index) => `cap-${index}`) }),
+    /capabilities exceed the bridge init limits/,
   );
 });
 

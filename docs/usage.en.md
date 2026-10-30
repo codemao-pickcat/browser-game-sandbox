@@ -93,19 +93,21 @@ session.start();
 await session.connected;
 ```
 
-`gameOrigin` must be an exact `http` or `https` origin, including scheme and port when applicable. Paths, wildcards, and `*` are rejected or unsafe.
+`gameOrigin` must be an exact `http` or `https` origin, including scheme and port when applicable. It must be cross-origin from the host page. Paths, wildcards, commas, quotes, and `*` are rejected.
 
 ### Host options
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
-| `gameOrigin` | required | Exact origin allowed to initiate the handshake |
+| `gameOrigin` | required | Exact origin allowed to initiate the handshake; must differ from the host origin |
+| `hostOrigin` | inferred | Optional explicit host origin; same-origin game configurations are rejected |
 | `capabilities` | `[]` | Capabilities granted to registered host methods |
 | `browserCapabilities` | `[]` | Declared browser capability profile; must match the actual iframe/CSP policy |
 | `maxPayloadBytes` | `65536` | Maximum estimated structured-clone payload size |
 | `maxRequestsPerSecond` | `30` | Request rate limit per session |
 | `maxConcurrentRequests` | `64` | Maximum unresolved host handlers |
 | `maxRequestIds` | `10000` | Maximum remembered request IDs per session |
+| `requestIdTtlMs` | `60000` | How long a request ID remains reserved |
 | `handshakeTimeoutMs` | `5000` | Time allowed for the handshake |
 
 ## 4. Game integration
@@ -394,13 +396,13 @@ network.websocket
 network.webrtc
 ```
 
-The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and denies Service Workers. Storage, WebGL, WebAudio, WebRTC, and the distinction between Dedicated and Shared Workers are declarative limitations in ordinary browsers; the policy builder reports warnings for them instead of claiming hard isolation.
+The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and denies Service Workers. Storage, WebGL, WebAudio, WebRTC, and the distinction between Dedicated and Shared Workers are declarative limitations in ordinary browsers; the policy builder reports `not-enforceable` status or warnings for them instead of claiming hard isolation.
 
 ### Important limitations
 
 - This is a browser-level boundary, not an OS/container boundary.
 - The bridge does not provide a generic network proxy.
-- `localStorage` and `IndexedDB` are browser APIs, not bridge capabilities that can be revoked per call.
+- `localStorage` and `IndexedDB` are browser APIs, not bridge capabilities that can be revoked per call. Use a separate game origin per untrusted game if storage isolation matters.
 - Any code running inside the sandbox context that receives the `MessagePort` has the same bridge authority as the game. There is no script-level identity separation.
 - Dedicated Worker support and Service Worker denial must be verified in the target browsers.
 - Host method handlers are trusted host code; their own authorization logic is outside this package.
@@ -429,7 +431,7 @@ Errors are reported as `SandboxBridgeError`:
 ## 12. Protocol invariants
 
 - Protocol version is currently `1`.
-- Request IDs are single-use for the lifetime of a host session.
+- Request IDs are reserved for the configured TTL; replay protection is bounded rather than permanent.
 - Only one `MessageChannel` can be established per host session.
 - Invalid messages are ignored or rejected without invoking a host handler.
 - Payloads are bounded on both outbound and inbound paths.

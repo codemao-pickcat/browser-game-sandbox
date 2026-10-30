@@ -22,6 +22,7 @@ export interface HostMessageEventLike {
 }
 
 export interface HostWindowLike {
+  readonly location?: { readonly origin: string };
   addEventListener(
     type: "message",
     listener: (event: HostMessageEventLike) => void,

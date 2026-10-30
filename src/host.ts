@@ -52,6 +52,7 @@ export interface SandboxHostOptions {
   readonly window: HostWindowLike;
   readonly iframe: IframeLike;
   readonly gameOrigin: string;
+  readonly hostOrigin?: string;
   readonly capabilities?: readonly string[];
   readonly browserCapabilities?: readonly BrowserCapability[];
   readonly methods?: Readonly<Record<string, HostMethodDefinition>>;
@@ -97,6 +98,13 @@ export class SandboxHostSession {
 
   public constructor(private readonly options: SandboxHostOptions) {
     assertValidOrigin(options.gameOrigin);
+    const hostOrigin = options.hostOrigin ?? options.window.location?.origin;
+    if (hostOrigin !== undefined) {
+      assertValidOrigin(hostOrigin);
+      if (hostOrigin === options.gameOrigin) {
+        throw new TypeError("gameOrigin must be cross-origin from the host");
+      }
+    }
     this.capabilities = [...(options.capabilities ?? [])];
     this.browserCapabilities = [...(options.browserCapabilities ?? [])];
     assertBrowserCapabilities(this.browserCapabilities);

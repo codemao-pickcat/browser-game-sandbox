@@ -167,7 +167,10 @@ const hostExtensions = composeHostPlugins([
   createHostPlugin(echoPlugin, {
     echo: async (input, context) => input,
   }),
-]);
+], {
+  // 最终授权只能由受信任宿主明确配置。
+  grantedCapabilities: ["com.example.echo"],
+});
 
 const session = new SandboxHostSession({
   // ...
@@ -209,11 +212,13 @@ const result = await bridge.call(
 
 ```text
 协议 schema
+→ 速率配额
+→ 请求 ID 重放/预算检查
+→ 全局并发配额
 → 方法是否存在
 → capability 是否由宿主授予
 → payload 大小
-→ 请求 ID 是否重放
-→ 速率/并发配额
+→ 方法并发配额
 → input schema
 → handler
 → output schema

@@ -212,10 +212,9 @@ try {
   // The sandbox is expected to block this navigation.
 }
 
-const hostOrigin = new URL(document.referrer).origin;
 const bridge = await acceptSandboxBridge({
   window,
-  expectedHostOrigin: hostOrigin,
+  expectedHostOrigin: ${JSON.stringify(hostOrigin)},
 });
 
 try {
