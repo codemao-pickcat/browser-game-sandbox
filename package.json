@@ -2,6 +2,9 @@
   "name": "@codemao-pickcat/browser-game-sandbox",
   "version": "0.0.4",
   "description": "Bare browser sandbox host bridge for untrusted web games",
+  "engines": {
+    "node": ">=24"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "types": "./dist/index.d.ts",
@@ -36,7 +39,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
-    "typescript": "^5.9.2",
+    "typescript": "^7.0.2",
     "vue": "^3.5.13"
   },
   "peerDependencies": {

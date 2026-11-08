@@ -8,6 +8,8 @@ This package contains no platform business API, credentials, network proxy, acco
 
 ## Build and test
 
+The package is tested and published with Node.js 24 or newer.
+
 ```bash
 npm install
 npm test
