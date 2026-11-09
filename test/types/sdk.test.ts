@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
   composeHostPlugins,
+  connectSandboxHtmlSdk,
   createHostPlugin,
   createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
   type SandboxCallTransport,
+  type GameWindowLike,
 } from "../../src/index.js";
 
 const echoPlugin = defineSandboxPlugin({
@@ -33,6 +35,15 @@ void value;
 
 // @ts-expect-error The plugin input schema requires a string value.
 await sdk.echo.echo({ value: 123 });
+
+const htmlGame = await connectSandboxHtmlSdk({
+  window: {} as GameWindowLike,
+  expectedHostOrigin: "https://host.example.test",
+  plugins: { echo: echoPlugin },
+});
+const htmlResult = await htmlGame.sdk.echo.echo({ value: "hello" });
+const htmlValue: string = htmlResult.value;
+void htmlValue;
 
 const hostPlugin = createHostPlugin(echoPlugin, {
   echo: async (input, context) => {

@@ -91,7 +91,6 @@ function hostHtml() {
       title="game"
       sandbox="${browserPolicy.sandboxTokens.join(" ")}"
       allow="${browserPolicy.iframeAllow.join("; ")}"
-      src="${gameOrigin}/game.html"
     ></iframe>
     <script type="module">
       import { SandboxHostSession } from "/dist/index.js";
@@ -114,6 +113,7 @@ function hostHtml() {
         },
       });
       host.start();
+      iframe.src = ${JSON.stringify(`${gameOrigin}/game.html`)};
       window.__sandboxHost = host;
       host.connected
         .then(() => { status.textContent = "connected"; })
@@ -141,13 +141,14 @@ function gameHtml(importMapNonce) {
     <div id="network">pending</div>
     <div id="parent-access">pending</div>
     <div id="popup">pending</div>
-    <script type="module" src="/game.js"></script>
+    <script src="/dist/game.global.js"></script>
+    <script src="/game.js"></script>
   </body>
 </html>`;
 }
 
 function gameJs() {
-  return `import { acceptSandboxBridge } from "/dist/index.js";
+  return `(async () => {
 
 const set = (id, value) => { document.querySelector(id).textContent = value; };
 
@@ -212,19 +213,18 @@ try {
   // The sandbox is expected to block this navigation.
 }
 
-const bridge = await acceptSandboxBridge({
-  window,
+const game = await window.CodemaoSandboxGame.connectSandboxHtmlSdk({
   expectedHostOrigin: ${JSON.stringify(hostOrigin)},
 });
 
 try {
-  const result = await bridge.call("sandbox.ping", {});
-  const echo = await bridge.call("test.echo", { value: "ok" });
+  const result = await game.call("sandbox.ping", {});
+  const echo = await game.call("test.echo", { value: "ok" });
   set("#bridge", result.ok === true && echo.value === "ok" ? "ok" : "failed");
 } catch {
   set("#bridge", "failed");
 }
-`;
+})();`;
 }
 
 function attackerHtml() {

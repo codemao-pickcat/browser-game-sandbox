@@ -29,7 +29,7 @@ The trusted host creates an iframe with a stable, cross-origin game origin and s
 ## CI and publishing
 
 - Pushes and pull requests run Node checks, the Vue 3 consumer build, and Chromium sandbox tests.
-- Tags matching `v*.*.*` run the full suite, synchronize `package.json` to the tag version, build an npm tarball, upload it as an artifact, and publish to GitHub Packages.
+- Tags matching `v*.*.*` run the full suite, synchronize `package.json` to the tag version, verify the HTML bundle, build an npm tarball, upload it as an artifact, and publish to the GitHub Packages npm registry.
 - The package is ESM-first and tested through a Vue 3 + Vite consumer fixture.
 
 ## Documentation
@@ -37,6 +37,7 @@ The trusted host creates an iframe with a stable, cross-origin game origin and s
 - [English usage guide](./docs/usage.en.md)
 - [简体中文使用手册](./docs/usage.zh-CN.md)
 - Vue 3 integration is available from `@codemao-pickcat/browser-game-sandbox/vue` with `createSandboxVuePlugin`, `defineSandboxVueConfig`, and `useSandboxSdk`.
+- Plain HTML games can use `@codemao-pickcat/browser-game-sandbox/game` or load the bundled `dist/game.global.js`, which exposes `window.CodemaoSandboxGame`.
 - [ADR 0001: MessageChannel host bridge](./docs/adr/0001-message-channel-host-bridge.md)
 - [English plugin specification](./docs/plugin-spec.en.md)
 - [插件规范（简体中文）](./docs/plugin-spec.zh-CN.md)

@@ -50,7 +50,6 @@ Create an iframe with a stable, exact game origin. Do not use a wildcard origin.
 ```html
 <iframe
   id="game-frame"
-  src="https://game.example.test/index.html"
   sandbox="allow-scripts allow-same-origin"
 ></iframe>
 ```
@@ -90,8 +89,11 @@ const session = new SandboxHostSession({
 });
 
 session.start();
+iframe.src = "https://game.example.test/index.html";
 await session.connected;
 ```
+
+Start the session before assigning the iframe `src` so the host is already listening when a fast-loading plain HTML SDK announces the handshake.
 
 `gameOrigin` must be an exact `http` or `https` origin, including scheme and port when applicable. It must be cross-origin from the host page. Paths, wildcards, commas, quotes, and `*` are rejected.
 
@@ -137,7 +139,59 @@ console.log(info.protocolVersion, capabilities.capabilities);
 
 `acceptSandboxBridge` announces readiness to the parent with an exact `targetOrigin`, validates the parent source and origin, accepts exactly one transferred port, and sends the port-level ready message.
 
-### 4.1 Vue 3 config modules and native components
+### 4.1 Plain HTML game SDK
+
+A game that does not use TypeScript or a build tool can load `dist/game.global.js` from the published package. It exposes the game-side entry as `window.CodemaoSandboxGame` while reusing the same handshake, MessageChannel, timeout, cancellation, and event implementation.
+
+```html
+<script src="/sandbox-sdk/game.global.js" defer></script>
+<script>
+  async function startGame() {
+    const game = await CodemaoSandboxGame.connectSandboxHtmlSdk({
+      expectedHostOrigin: "https://host.example.test"
+    });
+
+    const info = await game.call("sandbox.getInfo", {});
+    console.log("bridge protocol:", info.protocolVersion);
+
+    game.on("example.score.changed", (payload) => {
+      console.log("score changed", payload);
+    });
+  }
+
+  startGame().catch((error) => {
+    console.error("sandbox bridge failed", error);
+  });
+</script>
+```
+
+An HTML page using a bundler or an import map can use the `@codemao-pickcat/browser-game-sandbox/game` ESM entry. A browser ESM page also needs an import-map entry for the package's `zod` dependency:
+
+```html
+<script type="module">
+  import { connectSandboxHtmlSdk } from "@codemao-pickcat/browser-game-sandbox/game";
+
+  const game = await connectSandboxHtmlSdk({
+    expectedHostOrigin: "https://host.example.test"
+  });
+  await game.call("sandbox.ping", {});
+</script>
+```
+
+`expectedHostOrigin` must come from trusted runtime configuration. Do not use `*` or infer it from `document.referrer`. Client-side validation in the plain HTML SDK is for developer feedback; the host remains responsible for capabilities, payload limits, rate limits, error sanitization, and authorization.
+
+TypeScript projects can also use `game.sdk` with the same plugin contracts as `createSandboxSdk`:
+
+```ts
+const game = await connectSandboxHtmlSdk({
+  expectedHostOrigin: "https://host.example.test",
+  plugins: { echo: echoPlugin },
+});
+
+const result = await game.sdk.echo.echo({ value: "hello" });
+```
+
+### 4.2 Vue 3 config modules and native components
 
 A Vue 3 application can keep its bridge configuration in a separate module and install the integration from the `/vue` entry point. The plugin uses Vue `provide/inject`, so any native Vue component can access the same bridge and typed SDK.
 

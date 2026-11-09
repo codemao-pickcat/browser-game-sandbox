@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   publish:
-    name: Test and publish GitHub Package
+    name: Test and publish GitHub npm package
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,6 +47,12 @@ jobs:
             npm version "$version" --no-git-tag-version
           fi
 
+      - name: Verify published package contents
+        shell: bash
+        run: |
+          test -f dist/game.global.js
+          node -e 'const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8")); if (pkg.publishConfig?.registry !== "https://npm.pkg.github.com") process.exit(1); if (!pkg.exports?.["./game.global.js"]) process.exit(1);'
+
       - name: Build package artifact
         run: mkdir -p artifacts && npm pack --pack-destination artifacts
 
@@ -58,6 +64,6 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to GitHub Packages
-        run: npm publish
+        run: npm publish --registry=https://npm.pkg.github.com
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

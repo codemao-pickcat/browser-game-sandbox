@@ -18,7 +18,12 @@
     "./vue": {
       "types": "./dist/vue.d.ts",
       "import": "./dist/vue.js"
-    }
+    },
+    "./game": {
+      "types": "./dist/html.d.ts",
+      "import": "./dist/html.js"
+    },
+    "./game.global.js": "./dist/game.global.js"
   },
   "files": [
     "dist",
@@ -29,7 +34,8 @@
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build:browser",
+    "build:browser": "node scripts/build-browser.mjs",
     "test": "npm run build && node --test test/*.test.mjs",
     "check:types": "tsc -p tsconfig.tests.json --noEmit",
     "test:vue": "npm run build && npm --prefix test/vue-compat install --no-package-lock --ignore-scripts && npm --prefix test/vue-compat run build",
@@ -39,6 +45,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
+    "esbuild": "^0.25.12",
     "typescript": "^7.0.2",
     "vue": "^3.5.13"
   },

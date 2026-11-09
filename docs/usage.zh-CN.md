@@ -50,7 +50,6 @@ npm run test:all
 ```html
 <iframe
   id="game-frame"
-  src="https://game.example.test/index.html"
   sandbox="allow-scripts allow-same-origin"
 ></iframe>
 ```
@@ -90,8 +89,11 @@ const session = new SandboxHostSession({
 });
 
 session.start();
+iframe.src = "https://game.example.test/index.html";
 await session.connected;
 ```
+
+先调用 `session.start()` 再设置 iframe 的 `src`，可以保证宿主已经开始监听握手消息；这对加载很快的纯 HTML SDK 尤其重要。
 
 `gameOrigin` 必须是精确的 `http` 或 `https` origin，包含协议和必要的端口，并且必须与宿主页面跨源。不能使用路径、通配符、逗号、引号或 `*`。
 
@@ -137,7 +139,59 @@ console.log(info.protocolVersion, capabilities.capabilities);
 
 `acceptSandboxBridge` 会向精确的 `targetOrigin` 发送就绪消息，校验父窗口的 source 和 origin，只接受一个传入的端口，然后通过端口发送握手完成消息。
 
-### 4.1 Vue 3 配置文件与原生组件
+### 4.1 纯 HTML 开发者 SDK
+
+不使用 TypeScript 或构建工具的 HTML 游戏可以加载发布包中的 `dist/game.global.js`。它会把游戏侧入口暴露为 `window.CodemaoSandboxGame`，并复用同一套握手、MessageChannel、超时、取消和事件实现。
+
+```html
+<script src="/sandbox-sdk/game.global.js" defer></script>
+<script>
+  async function startGame() {
+    const game = await CodemaoSandboxGame.connectSandboxHtmlSdk({
+      expectedHostOrigin: "https://host.example.test"
+    });
+
+    const info = await game.call("sandbox.getInfo", {});
+    console.log("bridge protocol:", info.protocolVersion);
+
+    game.on("example.score.changed", (payload) => {
+      console.log("score changed", payload);
+    });
+  }
+
+  startGame().catch((error) => {
+    console.error("sandbox bridge failed", error);
+  });
+</script>
+```
+
+使用构建工具或 import map 的 HTML 页面也可以使用 `@codemao-pickcat/browser-game-sandbox/game` ESM 入口。直接使用浏览器 ESM 时，还需要为包内的 `zod` 依赖提供 import map：
+
+```html
+<script type="module">
+  import { connectSandboxHtmlSdk } from "@codemao-pickcat/browser-game-sandbox/game";
+
+  const game = await connectSandboxHtmlSdk({
+    expectedHostOrigin: "https://host.example.test"
+  });
+  await game.call("sandbox.ping", {});
+</script>
+```
+
+`expectedHostOrigin` 必须由受信任的运行时配置提供，不能使用 `*`，也不能根据 `document.referrer` 自动推断。纯 HTML SDK 的 client 校验只用于开发体验；capability、payload、限流、错误脱敏和最终授权仍由宿主执行。
+
+如果游戏使用 TypeScript 或构建工具，可以继续使用 `game.sdk`，它与 `createSandboxSdk` 使用相同的插件契约：
+
+```ts
+const game = await connectSandboxHtmlSdk({
+  expectedHostOrigin: "https://host.example.test",
+  plugins: { echo: echoPlugin },
+});
+
+const result = await game.sdk.echo.echo({ value: "hello" });
+```
+
+### 4.2 Vue 3 配置文件与原生组件
 
 Vue 3 项目可以把桥接配置预先放在独立配置文件中，再通过 `/vue` 入口安装插件。插件会使用 Vue 的 `provide/inject`，因此任意原生 Vue 组件都可以获取同一个 bridge 和类型化 SDK。
 
