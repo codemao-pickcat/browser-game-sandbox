@@ -1,9 +1,10 @@
 name: Publish package
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -11,16 +12,24 @@ permissions:
 
 jobs:
   publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     name: Test and publish GitHub npm package
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 24.x
+          node-version: 24
           registry-url: https://npm.pkg.github.com
           cache: npm
 
@@ -36,7 +45,7 @@ jobs:
       - name: Synchronize package version with tag
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           version="${tag#v}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Tag must match v*.*.*: $tag"
@@ -57,9 +66,9 @@ jobs:
         run: mkdir -p artifacts && npm pack --pack-destination artifacts
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: browser-game-sandbox-package-${{ github.ref_name }}
+          name: browser-game-sandbox-package-${{ env.RELEASE_TAG }}
           path: artifacts/*.tgz
           if-no-files-found: error
 
