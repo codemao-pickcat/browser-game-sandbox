@@ -5,6 +5,7 @@ export * from "./host.js";
 export * from "./host-plugin.js";
 export * from "./html.js";
 export * from "./plugin.js";
+export * from "./package-policy.js";
 export * from "./protocol.js";
 export * from "./sdk.js";
 export * from "./transport.js";

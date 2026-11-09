@@ -38,6 +38,7 @@ export type BrowserCapabilityEnforcement =
   | "enforced"
   | "declarative"
   | "not-enforceable"
+  | "not-distinguishable"
   | "not-granted";
 
 export interface BrowserPolicyOptions {
@@ -70,12 +71,12 @@ const permissionPolicyFeatures = [
 
 const enforcementByCapability: Record<
   BrowserCapability,
-  "enforced" | "declarative"
+  "enforced" | "declarative" | "not-distinguishable"
 > = {
   [BROWSER_CAPABILITIES.localStorage]: "declarative",
   [BROWSER_CAPABILITIES.indexedDb]: "declarative",
-  [BROWSER_CAPABILITIES.dedicatedWorker]: "enforced",
-  [BROWSER_CAPABILITIES.sharedWorker]: "declarative",
+  [BROWSER_CAPABILITIES.dedicatedWorker]: "not-distinguishable",
+  [BROWSER_CAPABILITIES.sharedWorker]: "not-distinguishable",
   [BROWSER_CAPABILITIES.serviceWorker]: "enforced",
   [BROWSER_CAPABILITIES.wasm]: "enforced",
   [BROWSER_CAPABILITIES.webgl]: "declarative",
@@ -198,13 +199,27 @@ export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy
   if (granted.has(BROWSER_CAPABILITIES.webRtc)) {
     warnings.push("WebRTC is not fully controlled by CSP or Permissions-Policy in ordinary browsers.");
   }
+  warnings.push(
+    "A browser sandbox cannot enforce image/video-only file chooser selection; use a host-side picker for that policy.",
+  );
   if (granted.has(BROWSER_CAPABILITIES.sharedWorker) !== granted.has(BROWSER_CAPABILITIES.dedicatedWorker)) {
     warnings.push("CSP worker-src cannot reliably distinguish Dedicated Worker from Shared Worker.");
   }
 
   const enforcement = {} as Record<BrowserCapability, BrowserCapabilityEnforcement>;
+  const workerBucketEnabled =
+    granted.has(BROWSER_CAPABILITIES.dedicatedWorker) ||
+    granted.has(BROWSER_CAPABILITIES.sharedWorker) ||
+    granted.has(BROWSER_CAPABILITIES.serviceWorker);
   for (const capability of Object.values(BROWSER_CAPABILITIES)) {
-    if (!granted.has(capability)) {
+    if (
+      capability === BROWSER_CAPABILITIES.dedicatedWorker ||
+      capability === BROWSER_CAPABILITIES.sharedWorker
+    ) {
+      enforcement[capability] = workerBucketEnabled
+        ? "not-distinguishable"
+        : "not-granted";
+    } else if (!granted.has(capability)) {
       enforcement[capability] = "not-granted";
     } else if (
       capability === BROWSER_CAPABILITIES.localStorage ||

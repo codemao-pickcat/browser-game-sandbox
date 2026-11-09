@@ -5,7 +5,10 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
-import { buildBrowserPolicy } from "../../dist/index.js";
+import {
+  buildBrowserPolicy,
+  createSandboxGamePackagePolicy,
+} from "../../dist/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let hostServer;
@@ -13,6 +16,16 @@ let gameServer;
 let hostOrigin;
 let gameOrigin;
 let networkHits = 0;
+const gamePackage = createSandboxGamePackagePolicy({
+  entry: "index.html",
+  resources: [
+    "index.html",
+    "game.js",
+    "attacker.html",
+    "sw.js",
+    "dist/game.global.js",
+  ],
+});
 
 function listen(server) {
   return new Promise((resolvePort, reject) => {
@@ -113,7 +126,7 @@ function hostHtml() {
         },
       });
       host.start();
-      iframe.src = ${JSON.stringify(`${gameOrigin}/game.html`)};
+      iframe.src = ${JSON.stringify(`${gameOrigin}/index.html`)};
       window.__sandboxHost = host;
       host.connected
         .then(() => { status.textContent = "connected"; })
@@ -137,6 +150,7 @@ function gameHtml(importMapNonce) {
     <div id="local-storage">pending</div>
     <div id="indexed-db">pending</div>
     <div id="dedicated-worker">pending</div>
+    <div id="shared-worker">pending</div>
     <div id="service-worker">pending</div>
     <div id="network">pending</div>
     <div id="parent-access">pending</div>
@@ -174,6 +188,17 @@ try {
   worker.onerror = () => { set("#dedicated-worker", "failed"); worker.terminate(); URL.revokeObjectURL(workerUrl); };
 } catch {
   set("#dedicated-worker", "failed");
+}
+
+try {
+  const sharedWorkerUrl = URL.createObjectURL(new Blob(["onconnect = () => {}"], { type: "text/javascript" }));
+  const sharedWorker = new SharedWorker(sharedWorkerUrl);
+  sharedWorker.port.start();
+  set("#shared-worker", "allowed");
+  sharedWorker.port.close();
+  URL.revokeObjectURL(sharedWorkerUrl);
+} catch {
+  set("#shared-worker", "blocked");
 }
 
 (async () => {
@@ -236,7 +261,7 @@ function attackerHtml() {
 async function startServers() {
   gameServer = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, gameOrigin ?? "http://127.0.0.1").pathname;
-    if (pathname === "/game.html") {
+    if (pathname === "/index.html") {
       const importMapNonce = randomBytes(16).toString("base64");
       const browserPolicy = buildBrowserPolicy({
         gameOrigin,
@@ -250,6 +275,11 @@ async function startServers() {
         "Permissions-Policy": browserPolicy.permissionsPolicy,
       });
       response.end(gameHtml(importMapNonce));
+      return;
+    }
+    if (pathname !== "/network-hit" && !gamePackage.isAllowedResourcePath(pathname)) {
+      response.writeHead(404);
+      response.end();
       return;
     }
     if (pathname === "/game.js") {
@@ -335,6 +365,9 @@ test("runs the real cross-origin iframe bridge and browser capability profile", 
   await expect(game.locator("#local-storage")).toHaveText("ok");
   await expect(game.locator("#indexed-db")).toHaveText("ok");
   await expect(game.locator("#dedicated-worker")).toHaveText("ok");
+  // worker-src is one browser bucket: granting Dedicated Worker also permits
+  // SharedWorker in Chromium, so the policy reports not-distinguishable.
+  await expect(game.locator("#shared-worker")).toHaveText("allowed");
   await expect(game.locator("#service-worker")).toHaveText("blocked");
   await expect(game.locator("#network")).toHaveText("blocked");
   await expect(game.locator("#parent-access")).toHaveText("blocked");
@@ -349,4 +382,60 @@ test("ignores a same-origin attacker iframe trying to hijack the handshake", asy
   await page.goto(`${hostOrigin}/host.html`);
   await expect(page.locator("#host-status")).toHaveText("connected");
   await expect(page.frameLocator("iframe#game").locator("#bridge")).toHaveText("ok");
+});
+
+test("terminates the session when the game iframe navigates after its initial document", async ({ page }) => {
+  await page.goto(`${hostOrigin}/host.html`);
+  await expect(page.locator("#host-status")).toHaveText("connected");
+  const gameFrame = page
+    .frames()
+    .find((frame) => frame.url().startsWith(`${gameOrigin}/index.html`));
+  assert.ok(gameFrame, "game frame should exist");
+
+  await gameFrame.evaluate(() => {
+    location.href = "/missing.html";
+  });
+
+  await expect(page.locator("#host-status")).toHaveText(
+    "terminated:Sandbox iframe navigated after its initial document",
+  );
+});
+
+test("characterizes file chooser and download behavior under the baseline policy", async ({ page }) => {
+  await page.goto(`${hostOrigin}/host.html`);
+  await expect(page.locator("#host-status")).toHaveText("connected");
+  const gameFrame = page
+    .frames()
+    .find((frame) => frame.url().startsWith(`${gameOrigin}/index.html`));
+  assert.ok(gameFrame, "game frame should exist");
+
+  const fileChooserPromise = Promise.race([
+    page.waitForEvent("filechooser", { timeout: 1_000 }),
+    new Promise((resolve) => setTimeout(() => resolve(null), 1_000)),
+  ]);
+  await gameFrame.evaluate(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*,video/*";
+    document.body.append(input);
+    input.click();
+  });
+  const chosenFile = await fileChooserPromise;
+  assert.ok(chosenFile, "baseline sandbox should expose the browser file chooser");
+
+  let downloadObserved = false;
+  const onDownload = () => {
+    downloadObserved = true;
+  };
+  page.on("download", onDownload);
+  await gameFrame.evaluate(() => {
+    const link = document.createElement("a");
+    link.href = "data:text/plain,blocked";
+    link.download = "blocked.txt";
+    document.body.append(link);
+    link.click();
+  });
+  await page.waitForTimeout(500);
+  page.off("download", onDownload);
+  assert.equal(downloadObserved, false);
 });

@@ -97,6 +97,34 @@ Start the session before assigning the iframe `src` so the host is already liste
 
 `gameOrigin` must be an exact `http` or `https` origin, including scheme and port when applicable. It must be cross-origin from the host page. Paths, wildcards, commas, quotes, and `*` are rejected.
 
+### Game entry and resource allowlist
+
+The game resource server should make `index.html` the only entry point and apply a resource allowlist to every request. `createSandboxGamePackagePolicy` accepts only explicitly listed package-relative paths and rejects traversal, encoded paths, queries, fragments, cross-origin URLs, and undeclared resources:
+
+```ts
+import { createSandboxGamePackagePolicy } from "@codemao-pickcat/browser-game-sandbox";
+
+const packagePolicy = createSandboxGamePackagePolicy({
+  entry: "index.html",
+  resources: [
+    "index.html",
+    "game.js",
+    "styles/game.css",
+    "assets/logo.png",
+  ],
+});
+
+packagePolicy.assertEntryPath("/index.html");
+
+function serveGameRequest(pathname: string): void {
+  const path = packagePolicy.assertAllowedResourcePath(pathname);
+  // Read the game package only through the validated path.
+  console.log("serve", path);
+}
+```
+
+The resource server must still send the same CSP on every HTML document. The host watches the iframe's top-level `load` event; a second load after the initial document terminates the session, which prevents a running game from switching to an uncontrolled document. The resource allowlist and navigation watcher are both needed because a cross-origin host cannot read the iframe's current URL directly.
+
 ### Host options
 
 | Option | Default | Meaning |
@@ -450,7 +478,9 @@ network.websocket
 network.webrtc
 ```
 
-The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and denies Service Workers. Storage, WebGL, WebAudio, WebRTC, and the distinction between Dedicated and Shared Workers are declarative limitations in ordinary browsers; the policy builder reports `not-enforceable` status or warnings for them instead of claiming hard isolation.
+The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and denies Service Workers. Ordinary browsers cannot use CSP to distinguish Dedicated Workers from Shared Workers, so both report `not-distinguishable` instead of pretending to provide strict isolation. Storage, WebGL, WebAudio, and WebRTC also cannot be fully enforced by an ordinary web page.
+
+The `accept="image/*,video/*"` attribute on a file input is only a browser UI hint and cannot restrict the file a user ultimately selects. The baseline policy can block browser downloads, but it cannot turn the native file chooser into an image/video-only chooser; that product rule needs a trusted host-side file picker API.
 
 ### Important limitations
 
@@ -458,7 +488,7 @@ The tested baseline allows Blob Dedicated Workers with `worker-src blob:` and de
 - The bridge does not provide a generic network proxy.
 - `localStorage` and `IndexedDB` are browser APIs, not bridge capabilities that can be revoked per call. Use a separate game origin per untrusted game if storage isolation matters.
 - Any code running inside the sandbox context that receives the `MessagePort` has the same bridge authority as the game. There is no script-level identity separation.
-- Dedicated Worker support and Service Worker denial must be verified in the target browsers.
+- Dedicated/Shared Worker separation and Service Worker denial must be verified in the target browsers; ordinary CSP cannot strictly separate the first two.
 - Host method handlers are trusted host code; their own authorization logic is outside this package.
 
 ## 10. Validation and error handling

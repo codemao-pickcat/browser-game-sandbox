@@ -97,6 +97,34 @@ await session.connected;
 
 `gameOrigin` 必须是精确的 `http` 或 `https` origin，包含协议和必要的端口，并且必须与宿主页面跨源。不能使用路径、通配符、逗号、引号或 `*`。
 
+### 游戏包入口与资源白名单
+
+游戏资源服务器应把 `index.html` 作为唯一入口，并在每个请求上应用资源白名单。`createSandboxGamePackagePolicy` 只接受明确列出的包内路径，并拒绝路径穿越、编码路径、查询参数、片段、跨源 URL 和未声明资源：
+
+```ts
+import { createSandboxGamePackagePolicy } from "@codemao-pickcat/browser-game-sandbox";
+
+const packagePolicy = createSandboxGamePackagePolicy({
+  entry: "index.html",
+  resources: [
+    "index.html",
+    "game.js",
+    "styles/game.css",
+    "assets/logo.png",
+  ],
+});
+
+packagePolicy.assertEntryPath("/index.html");
+
+function serveGameRequest(pathname: string): void {
+  const path = packagePolicy.assertAllowedResourcePath(pathname);
+  // 只从已校验的 path 读取游戏包文件。
+  console.log("serve", path);
+}
+```
+
+资源服务器仍然必须给每一个 HTML 文档发送同一套 CSP。宿主会监听 iframe 的顶层 `load`；初始文档之后再次触发 load 会终止会话，防止游戏在运行期间切换到未受控文档。资源白名单和导航监听需要同时保留，因为浏览器无法让跨源宿主直接读取 iframe 的当前 URL。
+
 ### 宿主配置项
 
 | 配置项 | 默认值 | 含义 |
@@ -450,7 +478,9 @@ network.websocket
 network.webrtc
 ```
 
-已测试的基线使用 `worker-src blob:` 允许 Blob Dedicated Worker，并拒绝 Service Worker。Storage、WebGL、WebAudio、WebRTC，以及 Dedicated/Shared Worker 的区分，在普通浏览器中属于声明性限制；策略构建器会报告 `not-enforceable` 状态或警告，而不会假装提供硬隔离。
+已测试的基线使用 `worker-src blob:` 允许 Blob Dedicated Worker，并拒绝 Service Worker。普通浏览器不能用 CSP 区分 Dedicated Worker 和 Shared Worker，因此两者会报告 `not-distinguishable`，而不是伪装成严格隔离。Storage、WebGL、WebAudio、WebRTC 也属于不能由普通网页完全强制的能力。
+
+文件选择器的 `accept="image/*,video/*"` 只是浏览器界面提示，不能限制用户最终选择的文件类型。当前策略可以阻止浏览器下载，但不能把原生文件选择器变成图片/视频专用选择器；需要通过受信任宿主的文件选择 API 实现这部分产品规则。
 
 ### 重要限制
 
@@ -458,7 +488,7 @@ network.webrtc
 - 桥接不提供通用网络代理。
 - `localStorage` 和 `IndexedDB` 是浏览器能力，不是可以按每次调用撤销的桥接 capability；如果需要存储隔离，应为每个不可信游戏使用独立 game origin。
 - 只要沙箱内的代码拿到了 `MessagePort`，它就拥有与游戏相同的桥接权限；当前没有脚本级身份隔离。
-- Dedicated Worker 与禁止 Service Worker 的组合必须在目标浏览器中实际验证。
+- Dedicated/Shared Worker 的区分必须在目标浏览器中实际验证；普通 CSP 不能把它们严格分开。
 - 宿主方法属于受信任宿主代码，其内部授权逻辑不属于本包负责范围。
 
 ## 10. 校验与错误处理

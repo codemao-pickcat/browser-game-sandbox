@@ -38,6 +38,7 @@ The trusted host creates an iframe with a stable, cross-origin game origin and s
 - [简体中文使用手册](./docs/usage.zh-CN.md)
 - Vue 3 integration is available from `@codemao-pickcat/browser-game-sandbox/vue` with `createSandboxVuePlugin`, `defineSandboxVueConfig`, and `useSandboxSdk`.
 - Plain HTML games can use `@codemao-pickcat/browser-game-sandbox/game` or load the bundled `dist/game.global.js`, which exposes `window.CodemaoSandboxGame`.
+- Game resource servers can use `createSandboxGamePackagePolicy` to require `/index.html` and reject undeclared or traversal paths; the host also terminates a session after a post-load iframe navigation.
 - [ADR 0001: MessageChannel host bridge](./docs/adr/0001-message-channel-host-bridge.md)
 - [English plugin specification](./docs/plugin-spec.en.md)
 - [插件规范（简体中文）](./docs/plugin-spec.zh-CN.md)

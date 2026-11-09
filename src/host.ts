@@ -84,6 +84,7 @@ export class SandboxHostSession {
   private readonly channelFactory: MessageChannelFactory;
   private readonly onMessage = (event: HostMessageEventLike) =>
     this.handleWindowMessage(event);
+  private readonly onIframeLoad = () => this.handleIframeLoad();
   private readonly requestControllers = new Map<string, AbortController>();
   private readonly activeMethodRequests = new Map<string, number>();
   private readonly seenRequestIds = new Map<string, number>();
@@ -95,6 +96,7 @@ export class SandboxHostSession {
   private readonly rejectConnected: (reason: unknown) => void;
   private port: MessagePortLike | undefined;
   private connectedSettled = false;
+  private iframeLoadObserved = false;
 
   public constructor(private readonly options: SandboxHostOptions) {
     assertValidOrigin(options.gameOrigin);
@@ -200,6 +202,7 @@ export class SandboxHostSession {
     }
     this.state = "handshaking";
     this.options.window.addEventListener("message", this.onMessage);
+    this.options.iframe.addEventListener?.("load", this.onIframeLoad);
     this.handshakeTimer = setTimeout(
       () => this.terminate("Sandbox handshake timed out"),
       this.handshakeTimeoutMs,
@@ -227,6 +230,7 @@ export class SandboxHostSession {
     if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
     this.handshakeTimer = undefined;
     this.options.window.removeEventListener("message", this.onMessage);
+    this.options.iframe.removeEventListener?.("load", this.onIframeLoad);
 
     for (const controller of this.requestControllers.values()) controller.abort();
     this.requestControllers.clear();
@@ -295,6 +299,16 @@ export class SandboxHostSession {
       this.options.gameOrigin,
       [channel.port2 as unknown as Transferable],
     );
+  }
+
+  private handleIframeLoad(): void {
+    if (!this.iframeLoadObserved) {
+      this.iframeLoadObserved = true;
+      return;
+    }
+    if (this.state !== "terminated") {
+      this.terminate("Sandbox iframe navigated after its initial document");
+    }
   }
 
   private handlePortMessage(message: unknown): void {

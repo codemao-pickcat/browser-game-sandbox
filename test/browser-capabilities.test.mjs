@@ -29,9 +29,17 @@ test("builds an enforceable baseline browser policy", () => {
   assert.match(policy.contentSecurityPolicy, /connect-src 'self' https:\/\/api\.example\.test/);
   assert.match(policy.contentSecurityPolicy, /frame-ancestors https:\/\/host\.example\.test/);
   assert.match(policy.permissionsPolicy, /camera=\("https:\/\/game\.example\.test"\)/);
-  assert.equal(policy.enforcement[BROWSER_CAPABILITIES.dedicatedWorker], "enforced");
+  assert.equal(
+    policy.enforcement[BROWSER_CAPABILITIES.dedicatedWorker],
+    "not-distinguishable",
+  );
+  assert.equal(
+    policy.enforcement[BROWSER_CAPABILITIES.sharedWorker],
+    "not-distinguishable",
+  );
   assert.equal(policy.enforcement[BROWSER_CAPABILITIES.webgl], "not-granted");
   assert.equal(policy.enforcement[BROWSER_CAPABILITIES.webAudio], "not-enforceable");
+  assert.ok(policy.warnings.some((warning) => warning.includes("file chooser")));
 });
 
 test("keeps Service Worker denial separate from Blob Worker support", () => {
