@@ -1,4 +1,5 @@
 import { isValidMethodName } from "./protocol.js";
+import { assertGameApiName, type SandboxGameApiBindings } from "./game-api-config.js";
 import {
   pluginMethodName,
   type MethodInput,
@@ -37,6 +38,7 @@ export interface ComposeHostPluginsOptions {
 export interface ComposedHostPlugins {
   readonly capabilities: readonly string[];
   readonly methods: Readonly<Record<string, HostMethodDefinition>>;
+  readonly gameApi: SandboxGameApiBindings;
 }
 
 export function createHostPlugin<TPlugin extends SandboxPluginContract>(
@@ -53,6 +55,7 @@ export function composeHostPlugins(
   const declaredCapabilities = new Set<string>();
   const methods: Record<string, HostMethodDefinition> = Object.create(null);
   const pluginIds = new Set<string>();
+  const gameApi: Record<string, string> = Object.create(null);
 
   for (const capability of options.grantedCapabilities ?? []) {
     if (!isValidMethodName(capability)) {
@@ -66,6 +69,17 @@ export function composeHostPlugins(
       throw new TypeError(`Duplicate plugin ID: ${contract.id}`);
     }
     pluginIds.add(contract.id);
+
+    for (const [name, method] of Object.entries(contract.gameApi ?? {})) {
+      assertGameApiName(name);
+      if (!Object.prototype.hasOwnProperty.call(contract.methods, method)) {
+        throw new TypeError(`Unknown game API method: ${method}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(gameApi, name)) {
+        throw new TypeError(`Duplicate game API name: ${name}`);
+      }
+      gameApi[name] = pluginMethodName(contract.id, method);
+    }
 
     for (const capability of contract.capabilities) {
       if (!isValidMethodName(capability)) {
@@ -118,5 +132,6 @@ export function composeHostPlugins(
       grantedCapabilities.has(capability),
     ),
     methods,
+    gameApi: Object.freeze(gameApi),
   };
 }

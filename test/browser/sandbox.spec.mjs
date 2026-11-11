@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +7,7 @@ import { test, expect } from "@playwright/test";
 import {
   buildBrowserPolicy,
   createSandboxGamePackagePolicy,
+  renderSandboxGamePreloadScript,
 } from "../../dist/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -23,7 +23,7 @@ const gamePackage = createSandboxGamePackagePolicy({
     "game.js",
     "attacker.html",
     "sw.js",
-    "dist/game.global.js",
+    "dist/game.preload.js",
   ],
 });
 
@@ -141,11 +141,14 @@ function hostHtml() {
 </html>`;
 }
 
-function gameHtml(importMapNonce) {
+function gameHtml() {
   return `<!doctype html>
 <html>
   <body>
-    <script type="importmap" nonce="${importMapNonce}">${JSON.stringify({ imports: { zod: `${gameOrigin}/zod/index.js` } })}</script>
+    ${renderSandboxGamePreloadScript({
+      src: "/dist/game.preload.js", expectedHostOrigin: hostOrigin,
+      methods: { ping: "sandbox.ping", echo: "test.echo" },
+    })}
     <div id="bridge">pending</div>
     <div id="local-storage">pending</div>
     <div id="indexed-db">pending</div>
@@ -155,7 +158,6 @@ function gameHtml(importMapNonce) {
     <div id="network">pending</div>
     <div id="parent-access">pending</div>
     <div id="popup">pending</div>
-    <script src="/dist/game.global.js"></script>
     <script src="/game.js"></script>
   </body>
 </html>`;
@@ -238,13 +240,9 @@ try {
   // The sandbox is expected to block this navigation.
 }
 
-const game = await window.CodemaoSandboxGame.connectSandboxHtmlSdk({
-  expectedHostOrigin: ${JSON.stringify(hostOrigin)},
-});
-
 try {
-  const result = await game.call("sandbox.ping", {});
-  const echo = await game.call("test.echo", { value: "ok" });
+  const result = await window.game.ping({});
+  const echo = await window.game.echo({ value: "ok" });
   set("#bridge", result.ok === true && echo.value === "ok" ? "ok" : "failed");
 } catch {
   set("#bridge", "failed");
@@ -262,19 +260,17 @@ async function startServers() {
   gameServer = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, gameOrigin ?? "http://127.0.0.1").pathname;
     if (pathname === "/index.html") {
-      const importMapNonce = randomBytes(16).toString("base64");
       const browserPolicy = buildBrowserPolicy({
         gameOrigin,
         hostOrigins: [hostOrigin],
         capabilities: ["browser.storage.local", "browser.worker.dedicated"],
-        scriptNonces: [importMapNonce],
       });
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Security-Policy": browserPolicy.contentSecurityPolicy,
         "Permissions-Policy": browserPolicy.permissionsPolicy,
       });
-      response.end(gameHtml(importMapNonce));
+      response.end(gameHtml());
       return;
     }
     if (pathname !== "/network-hit" && !gamePackage.isAllowedResourcePath(pathname)) {

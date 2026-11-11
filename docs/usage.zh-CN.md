@@ -15,9 +15,11 @@
 1. 使用 `window.postMessage` 完成初始握手。
 2. 传递一个独立的 `MessageChannel`，后续请求、响应、事件、取消和终止都通过该端口完成。
 
-宿主是安全校验方。游戏侧 client 只是类型封装，不能被当作安全边界。运行时协议消息使用严格的 Zod schema 校验；payload 大小估算和浏览器 origin 校验仍然是独立的运行时控制。
+平台预加载脚本持有内部游戏侧 MessageChannel client；内容只使用已配置的 `window.game` 方法，不自行建立桥接连接。宿主是安全校验方；预加载接口只是便利封装，不是安全边界。运行时协议消息使用严格的 Zod schema 校验；payload 大小估算和浏览器 origin 校验仍然是独立的运行时控制。
 
-## 2. 安装与构建
+## 2. 平台安装与构建
+
+以下命令用于运行时开发和受信任平台接入。内容开发者不安装本包，Vue 项目也不例外。
 
 ```bash
 npm install
@@ -57,7 +59,35 @@ npm run test:all
 创建并启动宿主会话：
 
 ```ts
-import { SandboxHostSession } from "@codemao-pickcat/browser-game-sandbox";
+import { z } from "zod";
+import {
+  SandboxHostSession,
+  defineMethod,
+  defineSandboxPlugin,
+  createHostPlugin,
+  composeHostPlugins,
+} from "@codemao-pickcat/browser-game-sandbox";
+
+const echo = defineSandboxPlugin({
+  id: "com.example.echo",
+  version: "1.0.0",
+  gameApi: { echo: "echo" }, // window.game.echo -> com.example.echo.echo
+  methods: {
+    echo: defineMethod({
+      capability: "com.example.echo",
+      input: z.object({ value: z.string() }),
+      output: z.object({ value: z.string() }),
+    }),
+  },
+});
+const extensions = composeHostPlugins([
+  createHostPlugin(echo, {
+    echo(input, { signal }) {
+      if (signal.aborted) throw new Error("请求已取消");
+      return input;
+    },
+  }),
+], { grantedCapabilities: ["com.example.echo"] });
 
 const iframe = document.querySelector("#game-frame");
 if (!(iframe instanceof HTMLIFrameElement)) {
@@ -68,21 +98,8 @@ const session = new SandboxHostSession({
   window,
   iframe,
   gameOrigin: "https://game.example.test",
-  capabilities: ["example.echo"],
-  methods: {
-    "example.echo": {
-      capability: "example.echo",
-      validate(payload) {
-        if (!payload || typeof payload !== "object") {
-          throw new TypeError("payload 必须是对象");
-        }
-      },
-      handler(payload, { signal }) {
-        if (signal.aborted) throw new Error("请求已取消");
-        return payload;
-      },
-    },
-  },
+  capabilities: extensions.capabilities,
+  methods: extensions.methods,
   onRequestClose(reason) {
     console.log("游戏请求关闭：", reason);
   },
@@ -93,7 +110,7 @@ iframe.src = "https://game.example.test/index.html";
 await session.connected;
 ```
 
-先调用 `session.start()` 再设置 iframe 的 `src`，可以保证宿主已经开始监听握手消息；这对加载很快的纯 HTML SDK 尤其重要。
+先调用 `session.start()` 再设置 iframe 的 `src`，可以保证平台预加载脚本发起握手时宿主已开始监听。游戏资源服务器必须先完成第 4 节的预加载接入，再向内容提供游戏页面。
 
 `gameOrigin` 必须是精确的 `http` 或 `https` origin，包含协议和必要的端口，并且必须与宿主页面跨源。不能使用路径、通配符、逗号、引号或 `*`。
 
@@ -111,6 +128,7 @@ const packagePolicy = createSandboxGamePackagePolicy({
     "game.js",
     "styles/game.css",
     "assets/logo.png",
+    "__sandbox/game.preload.js", // 平台保留资源，绝不是上传文件。
   ],
 });
 
@@ -118,6 +136,10 @@ packagePolicy.assertEntryPath("/index.html");
 
 function serveGameRequest(pathname: string): void {
   const path = packagePolicy.assertAllowedResourcePath(pathname);
+  if (path === "/__sandbox/game.preload.js") {
+    // 返回可信发布包中的 dist/game.preload.js，而非上传文件。
+    return;
+  }
   // 只从已校验的 path 读取游戏包文件。
   console.log("serve", path);
 }
@@ -142,158 +164,118 @@ function serveGameRequest(pathname: string): void {
 
 ## 4. 游戏侧接入
 
-游戏必须知道受信任宿主的精确 origin。它应来自受信任的运行时配置，不要直接使用用户输入。
+### 平台自动预加载
 
-```ts
-import { acceptSandboxBridge } from "@codemao-pickcat/browser-game-sandbox";
+平台必须按插件配置在游戏脚本执行前建立 `window.game`。内容开发者不安装沙箱包、不添加预加载 script，也不手动握手，只需：
 
-const bridge = await acceptSandboxBridge({
-  window,
-  expectedHostOrigin: "https://host.example.test",
-});
-
-const info = await bridge.call<{ protocolVersion: number }>(
-  "sandbox.getInfo",
-  {},
-);
-
-const capabilities = await bridge.call<{ capabilities: string[] }>(
-  "sandbox.getCapabilities",
-  {},
-);
-
-console.log(info.protocolVersion, capabilities.capabilities);
+```js
+const result = await window.game.echo({ value: "hello" });
 ```
 
-`acceptSandboxBridge` 会向精确的 `targetOrigin` 发送就绪消息，校验父窗口的 source 和 origin，只接受一个传入的端口，然后通过端口发送握手完成消息。
+受信任插件通过 `gameApi` 显式声明扁平方法名到插件方法的映射，如第 3 节所示；未声明 `gameApi` 的插件不会自动暴露全局方法。`composeHostPlugins()` 返回冻结的「公开别名 → 完整宿主方法名」映射。可信游戏资源渲染器必须使用与宿主同一部署版本的插件配置：
 
-### 4.1 纯 HTML 开发者 SDK
+```ts
+import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
 
-不使用 TypeScript 或构建工具的 HTML 游戏可以加载发布包中的 `dist/game.global.js`。它会把游戏侧入口暴露为 `window.CodemaoSandboxGame`，并复用同一套握手、MessageChannel、超时、取消和事件实现。
+// extensions 来自第 3 节共享的受信任宿主契约组合结果。
+const preloadTag = renderSandboxGamePreloadScript({
+  src: "/__sandbox/game.preload.js",
+  expectedHostOrigin: "https://host.example.test",
+  methods: extensions.gameApi,
+});
+```
+
+**平台必须完成以下接入，本库不包含 HTML 资源服务器，也不会从父页面跨源修改游戏 DOM：**
+
+1. 把发布包的 `dist/game.preload.js` 精确挂载到游戏 origin 的保留路径 `/__sandbox/game.preload.js`；上传包不得覆盖此路径，不能开放整个目录。
+2. 在可信 HTML 渲染器的 `<head>` 中、**所有游戏可控标记之前**输出 `preloadTag`，再输出游戏内容。标签是同步经典脚本，不可添加 `async`、`defer` 或 `type="module"`。不要用不可靠的字符串替换改写任意上传 HTML；平台须用自己的受控模板或 HTML 解析器完成整合。
+3. 资源白名单同时列出 `index.html`、游戏资源和 `__sandbox/game.preload.js`，保留每个 HTML 响应的 CSP、Permissions-Policy 和导航限制。预加载包自包含，无需 import map、配置 fetch 或 `unsafe-inline`；`script-src 'self'`、`connect-src 'none'` 可保持不变。
+4. 在导航到游戏前启动宿主会话。精确宿主 origin、方法映射来自可信启动配置，不来自上传包、referrer 或未经校验的请求参数；预加载配置不得含凭据，缓存不得混用不同宿主/插件版本的配置。
+
+`window.game` 会同步建立为不可替换的冻结对象，且只包含显式映射的方法；名称冲突、已有全局、未知目标和 `then`/原型相关保留名会报错。方法始终返回 Promise，可传第二个参数 `{ signal, timeoutMs }`。默认调用超时 5000ms，包含等待握手的时间；握手前最多等待 64 个调用、payload 默认上限 65536 字节。标签配置可用 `handshakeTimeoutMs`、`defaultTimeoutMs`、`maxPayloadBytes`、`maxQueuedCalls` 调整；单次取消不取消共享握手，握手失败不自动重连。
+
+映射只控制便利接口，**不是权限 allowlist**；游戏仍可自行构造桥接请求，最终授权、输入输出 Zod、限流和错误脱敏始终由宿主执行。冻结全局不构成游戏脚本之间的安全隔离，也不暴露宿主函数或窗口。
+
+平台预加载是唯一受支持的内容接入方式。内部 client 向精确的 `targetOrigin` 发送就绪消息，校验父窗口的 source 和 origin，只接受一个传入端口，再通过端口完成握手。内容不提供宿主 origin，也不另建连接。`window.game` 只暴露已配置的插件方法，不提供通用 `call`、ready、事件订阅或连接管理接口。
+
+### 4.1 无 SDK 的纯 HTML 游戏
+
+上传的 HTML 只引用自身游戏脚本；平台单独在所有游戏可控标记之前插入预加载标签：
 
 ```html
-<script src="/sandbox-sdk/game.global.js" defer></script>
-<script>
-  async function startGame() {
-    const game = await CodemaoSandboxGame.connectSandboxHtmlSdk({
-      expectedHostOrigin: "https://host.example.test"
-    });
-
-    const info = await game.call("sandbox.getInfo", {});
-    console.log("bridge protocol:", info.protocolVersion);
-
-    game.on("example.score.changed", (payload) => {
-      console.log("score changed", payload);
-    });
-  }
-
-  startGame().catch((error) => {
-    console.error("sandbox bridge failed", error);
-  });
-</script>
+<script src="/game.js" defer></script>
 ```
 
-使用构建工具或 import map 的 HTML 页面也可以使用 `@codemao-pickcat/browser-game-sandbox/game` ESM 入口。直接使用浏览器 ESM 时，还需要为包内的 `zod` 依赖提供 import map：
+`game.js`：
 
-```html
-<script type="module">
-  import { connectSandboxHtmlSdk } from "@codemao-pickcat/browser-game-sandbox/game";
+```js
+async function startGame() {
+  const result = await window.game.echo({ value: "hello" });
+  console.log(result.value);
+}
 
-  const game = await connectSandboxHtmlSdk({
-    expectedHostOrigin: "https://host.example.test"
-  });
-  await game.call("sandbox.ping", {});
-</script>
-```
-
-`expectedHostOrigin` 必须由受信任的运行时配置提供，不能使用 `*`，也不能根据 `document.referrer` 自动推断。纯 HTML SDK 的 client 校验只用于开发体验；capability、payload、限流、错误脱敏和最终授权仍由宿主执行。
-
-如果游戏使用 TypeScript 或构建工具，可以继续使用 `game.sdk`，它与 `createSandboxSdk` 使用相同的插件契约：
-
-```ts
-const game = await connectSandboxHtmlSdk({
-  expectedHostOrigin: "https://host.example.test",
-  plugins: { echo: echoPlugin },
-});
-
-const result = await game.sdk.echo.echo({ value: "hello" });
-```
-
-### 4.2 Vue 3 配置文件与原生组件
-
-Vue 3 项目可以把桥接配置预先放在独立配置文件中，再通过 `/vue` 入口安装插件。插件会使用 Vue 的 `provide/inject`，因此任意原生 Vue 组件都可以获取同一个 bridge 和类型化 SDK。
-
-配置文件 `sandbox.config.ts`：
-
-```ts
-import { z } from "zod";
-import {
-  defineMethod,
-  defineSandboxPlugin,
-  type SandboxCallTransport,
-} from "@codemao-pickcat/browser-game-sandbox";
-import { defineSandboxVueConfig } from "@codemao-pickcat/browser-game-sandbox/vue";
-
-const echoPlugin = defineSandboxPlugin({
-  id: "com.example.echo",
-  version: "1.0.0",
-  methods: {
-    echo: defineMethod({
-      input: z.object({ value: z.string() }),
-      output: z.object({ value: z.string() }),
-    }),
-  },
-});
-
-const transport: SandboxCallTransport = {
-  call: async (_method, payload) => payload,
-};
-
-export default defineSandboxVueConfig({
-  transport,
-  plugins: { echo: echoPlugin },
+startGame().catch((error) => {
+  console.error("宿主调用失败", error.code, error.message);
 });
 ```
 
-应用入口安装插件：
+不需要沙箱 import、SDK script、import map 或内容侧 Zod 依赖。游戏可立即发起调用，返回的 Promise 已包含等待平台握手的过程。
 
-```ts
+### 4.2 无 SDK 的 Vue 3 原生组件
+
+Vue 仍是游戏自身的框架依赖。正常启动应用，不安装沙箱 Vue 插件，也不添加桥接配置模块：
+
+```js
 import { createApp } from "vue";
 import App from "./App.vue";
-import sandboxConfig from "./sandbox.config";
-import { createSandboxVuePlugin } from "@codemao-pickcat/browser-game-sandbox/vue";
 
-createApp(App).use(createSandboxVuePlugin(sandboxConfig)).mount("#app");
+createApp(App).mount("#app");
 ```
 
-原生 Vue 组件中调用：
+组件直接调用同一个原生全局对象：
 
 ```vue
-<script setup lang="ts">
-import { useSandboxReady, useSandboxSdk } from "@codemao-pickcat/browser-game-sandbox/vue";
+<script setup>
+import { ref } from "vue";
 
-const sdk = useSandboxSdk();
-const ready = useSandboxReady();
+const message = ref("");
 
-async function callHost(): Promise<void> {
-  await ready;
-  await sdk.value?.echo.echo({ value: "hello" });
+async function callHost() {
+  try {
+    const result = await window.game.echo({ value: "hello" });
+    message.value = result.value;
+  } catch (error) {
+    message.value = `${error.code}: ${error.message}`;
+  }
 }
 </script>
+
+<template>
+  <button @click="callHost">调用宿主</button>
+  <p>{{ message }}</p>
+</template>
 ```
 
-真实桥接场景可将 `transport` 替换为 `bridge`、`bridgeOptions` 或其 Promise；Vue 插件会在 `ready` 完成后更新注入的 refs。
+无需注入 SDK、ready ref 或等待额外连接。TypeScript 内容可使用平台提供的本地 `Window.game` 声明；不应为此安装宿主运行时包。
+
+### 4.3 破坏性迁移
+
+内容侧 SDK（包括 Vue 支持）彻底移除，不保留兼容模式：
+
+- 已移除包路径：`@codemao-pickcat/browser-game-sandbox/game`、`@codemao-pickcat/browser-game-sandbox/vue` 和 `game.global.js`（原 `dist/game.global.js` / `window.CodemaoSandboxGame`）。
+- 根入口不再导出：`acceptSandboxBridge`、`SandboxBridgeClient`、`createSandboxSdk`、`connectSandboxHtmlSdk`、`installSandboxGameApi`。内容不得深层导入它们的内部替代实现。
+- 删除 SDK import、script、Vue 插件安装、注入的 SDK/ready ref 和手动连接代码，改为直接调用已配置的 `window.game` 方法；取消和错误处理同样使用原生接口。
+- 仅根宿主 API 与 `game.preload.js` 平台产物继续公开。平台须先完成上述预加载/资源服务器接入再迁移内容；没有内容侧回退模式，也没有自动替换旧订阅的事件 API。
+
+内部 MessageChannel client、宿主安全校验和协议 v1 均保留。删除公开 SDK 不等于删除桥接运行时。
 
 ## 5. 调用宿主方法
 
-```ts
-const echoed = await bridge.call<{ value: string }>(
-  "example.echo",
-  { value: "hello" },
-);
+```js
+const echoed = await window.game.echo({ value: "hello" });
 ```
 
-方法名必须符合：
+这里 `echo` 是 `com.example.echo.echo` 的已配置公开别名；内容没有枚举或调用任意宿主方法的通用 API。内部带命名空间的桥接方法名必须符合：
 
 ```text
 ^[a-z][A-Za-z0-9._-]*$
@@ -308,48 +290,37 @@ const echoed = await bridge.call<{ value: string }>(
 
 游戏 payload 内的字段不能自行授予 capability。
 
-### 5.1 带类型推导的插件 SDK
+### 5.1 契约与校验
 
-游戏侧可以引入插件契约，让 SDK 根据插件自动推导方法名、输入和输出类型：
-
-```ts
-const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
-const result = await sdk.echo.echo({ value: "hello" });
-// result.value 的类型是 string
-```
-
-SDK 会在发送前校验输入，并在返回给游戏逻辑前校验宿主输出。宿主仍必须自己校验；游戏侧校验不是安全边界。
+共享契约属于受信任宿主注册与预加载配置，不是内容侧 SDK。`createHostPlugin` 和 `composeHostPlugins` 保留宿主输入/输出 Zod 校验和处理器类型推导。预加载脚本检查传输限制，不向内容分发插件 schema。内容本地类型声明必须与已部署的别名和 payload 一致，但不能授予权限或替代宿主校验。
 
 ## 6. 取消和超时
 
-```ts
+```js
 const controller = new AbortController();
 
-const request = bridge.call(
-  "example.echo",
+const request = window.game.echo(
   { value: "hello" },
   { signal: controller.signal, timeoutMs: 2_000 },
 );
 
 controller.abort();
-await request; // 以 SandboxBridgeError(code === "CANCELLED") 拒绝
+try {
+  await request;
+} catch (error) {
+  if (error.code !== "CANCELLED") throw error;
+}
 ```
+
+超时覆盖等待握手和执行的总时长；取消排队调用会释放队列位置，不会取消共享握手。请求已发出后，取消会继续传给宿主。
 
 宿主处理器会收到 `AbortSignal`。宿主方法应在 signal 被取消后停止工作。取消是协作式的，JavaScript 无法强制终止任意 Promise。
 
 ## 7. 事件和终止
 
-游戏侧监听事件：
+事件保留在平台内部运行时协议中，不是内容公共 API。`window.game` 没有事件订阅方法。宿主仍可发送协议事件，但内容没有受支持的监听接口；依赖旧订阅的产品须显式迁移，不应另建手动连接。
 
-```ts
-const unsubscribe = bridge.on("example.event", (payload) => {
-  console.log("收到事件", payload);
-});
-
-unsubscribe();
-```
-
-宿主侧发送事件：
+宿主侧协议事件：
 
 ```ts
 session.emit("example.event", { value: "hello" });
@@ -361,7 +332,7 @@ session.emit("example.event", { value: "hello" });
 session.terminate("宿主终止了沙箱");
 ```
 
-终止会发送 `sandbox.terminated`，关闭端口，拒绝所有 pending 请求，移除宿主的 message listener，并在传入的 iframe 支持 `remove()` 时尽力移除它。它不会擦除 origin 持久化存储或注销 Service Worker；这些需要单独的清理策略。游戏侧事件处理器不能阻止桥接清理。
+终止会发送 `sandbox.terminated`，关闭端口，拒绝所有 pending 请求，移除宿主的 message listener，并在传入的 iframe 支持 `remove()` 时尽力移除它。它不会擦除 origin 持久化存储或注销 Service Worker；这些需要单独的清理策略。游戏代码不能阻止桥接清理。
 
 ## 8. 内置方法
 
@@ -375,7 +346,7 @@ session.terminate("宿主终止了沙箱");
 | `sandbox.getBrowserCapabilities` | `{ capabilities }` |
 | `sandbox.requestClose` | 调用宿主的 `onRequestClose` 回调 |
 
-这些是运行时生命周期方法，不是平台业务 API。
+这些是平台内部运行时生命周期方法，不是内容公共 API，也不是平台业务 API。它们不会自动暴露到 `window.game`；内容只使用显式映射的插件方法。
 
 ## 9. 安全要求
 
@@ -388,7 +359,7 @@ event.origin === gameOrigin
 event.source === iframe.contentWindow
 ```
 
-游戏 client 必须同时校验：
+平台预加载脚本内部的私有 client 必须同时校验（内容不自行实现此握手）：
 
 ```ts
 event.origin === expectedHostOrigin
@@ -446,7 +417,7 @@ new SandboxHostSession({
 });
 ```
 
-游戏可以通过 `sandbox.getBrowserCapabilities` 查询这些声明。声明不会覆盖浏览器安全策略；宿主必须通过 iframe 配置和响应头实际执行相同 profile。`buildBrowserPolicy` 会生成 sandbox token、iframe `allow`、CSP、Permissions-Policy、执行状态和警告。
+内部运行时协议可通过 `sandbox.getBrowserCapabilities` 查询这些声明；它不是公开的 `window.game` 方法。声明不会覆盖浏览器安全策略；宿主必须通过 iframe 配置和响应头实际执行相同 profile。`buildBrowserPolicy` 会生成 sandbox token、iframe `allow`、CSP、Permissions-Policy、执行状态和警告。
 
 当前浏览器权限点包括：
 
@@ -497,7 +468,21 @@ network.webrtc
 
 ## 11. 错误处理
 
-错误会以 `SandboxBridgeError` 形式返回：
+原生 `window.game` 调用失败时会拒绝 Promise，错误包含 `code` 和 `message`。运行时内部使用 `SandboxBridgeError`，内容不导入其类，也不依赖 `instanceof` 判断：
+
+```js
+try {
+  await window.game.echo({ value: "hello" }, { timeoutMs: 2_000 });
+} catch (error) {
+  if (error.code === "CANCELLED") {
+    // 调用方已取消，无需展示失败提示。
+  } else if (error.code === "TIMEOUT") {
+    console.warn("宿主调用超时");
+  } else {
+    console.error("宿主调用失败", error.code, error.message);
+  }
+}
+```
 
 | Code | 含义 |
 | --- | --- |

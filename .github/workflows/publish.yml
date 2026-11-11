@@ -58,9 +58,7 @@ jobs:
 
       - name: Verify published package contents
         shell: bash
-        run: |
-          test -f dist/game.global.js
-          node -e 'const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8")); if (pkg.publishConfig?.registry !== "https://npm.pkg.github.com") process.exit(1); if (!pkg.exports?.["./game.global.js"]) process.exit(1);'
+        run: npm run check:package
 
       - name: Build package artifact
         run: mkdir -p artifacts && npm pack --pack-destination artifacts

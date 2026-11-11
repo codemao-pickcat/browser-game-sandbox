@@ -4,7 +4,7 @@
 
 ## 1. 范围
 
-插件是运行在**受信任沙箱宿主侧**的扩展，用于给游戏提供经过宿主控制的方法和事件。
+插件是运行在**受信任沙箱宿主侧**的扩展，提供受控方法和内部协议事件。内容通过平台预加载的 `window.game` 调用显式配置的方法，不安装沙箱包或框架适配器；预加载接口不提供公开事件订阅。
 
 插件不是：
 
@@ -40,7 +40,7 @@
 com.example.echo
 ```
 
-方法名和事件名必须带插件命名空间：
+内部桥接方法名和事件名必须带插件命名空间（公开的 `window.game` 别名在第 5.2 节单独配置）：
 
 ```text
 com.example.echo.echo
@@ -122,23 +122,23 @@ interface PluginMethodContext {
 }
 ```
 
-实现时应把 `input`、`output` schema 适配到当前 `HostMethodDefinition.validate` 和响应校验中。游戏永远不接触插件对象、宿主 `window`、iframe DOM 或 `MessagePort`。
+实现时应把 `input`、`output` schema 适配到当前 `HostMethodDefinition.validate` 和响应校验中。内容公共 API 不接收插件对象、宿主 `window`、iframe DOM 或 `MessagePort`；内部 client 由平台预加载脚本持有。
 
-### 5.1 游戏侧 SDK
+### 5.1 共享宿主契约与实现
 
-插件契约可以直接被游戏侧 SDK 引入，SDK 会根据插件对象推导方法名、输入类型和输出类型：
+契约放在宿主注册与游戏资源渲染器共用的受信任模块中，而不是上传内容中。`echo.contract.ts`：
 
 ```ts
 import { z } from "zod";
 import {
-  createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
 } from "@codemao-pickcat/browser-game-sandbox";
 
-const echoPlugin = defineSandboxPlugin({
+export const echoContract = defineSandboxPlugin({
   id: "com.example.echo",
   version: "1.0.0",
+  gameApi: { echo: "echo" },
   methods: {
     echo: defineMethod({
       capability: "com.example.echo",
@@ -147,24 +147,20 @@ const echoPlugin = defineSandboxPlugin({
     }),
   },
 });
-
-const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
-const result = await sdk.echo.echo({ value: "hello" });
-// result.value: string
 ```
 
-SDK 会在游戏侧校验输入和宿主返回值；校验失败不会继续发起调用或把非法返回值交给游戏逻辑。
-
-宿主侧可以使用同一份契约绑定实现：
+用同一份契约绑定受信任宿主处理器；输入/输出类型可推导，宿主 Zod 校验仍是最终校验方：
 
 ```ts
 import {
+  SandboxHostSession,
   composeHostPlugins,
   createHostPlugin,
 } from "@codemao-pickcat/browser-game-sandbox";
+import { echoContract } from "./echo.contract";
 
 const hostExtensions = composeHostPlugins([
-  createHostPlugin(echoPlugin, {
+  createHostPlugin(echoContract, {
     echo: async (input, context) => input,
   }),
 ], {
@@ -173,11 +169,31 @@ const hostExtensions = composeHostPlugins([
 });
 
 const session = new SandboxHostSession({
-  // ...
+  // ... window、iframe 和精确的 gameOrigin ...
   capabilities: hostExtensions.capabilities,
   methods: hostExtensions.methods,
 });
 ```
+
+Schema 和 handler 留在受信任宿主。内容不需要引入契约或类型化 SDK；可选的本地类型声明应匹配已部署的 `window.game` 别名。内容 SDK（包括 Vue 适配器）已下线，参见[破坏性迁移](./usage.zh-CN.md#43-破坏性迁移)。
+
+### 5.2 平台预加载的 window.game 方法
+
+契约可添加 `gameApi: { echo: "echo" }`，由平台预加载暴露为 `window.game.echo(payload, options)`。键是扁平公开名（`^[a-z][A-Za-z0-9_]{0,63}$`），值必须是当前插件 `methods` 的自有方法；`then`、`constructor`、`prototype` 和 `__proto__` 不允许使用，多个插件的公开名不得冲突。未配置映射的插件不自动暴露。
+
+`composeHostPlugins` 额外返回冻结的 `gameApi` 映射（公开名 → 完整宿主方法名），供可信游戏资源渲染器使用同一部署版本的宿主契约，传入 `renderSandboxGamePreloadScript`：
+
+```ts
+import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
+
+const preloadTag = renderSandboxGamePreloadScript({
+  src: "/__sandbox/game.preload.js",
+  expectedHostOrigin: "https://host.example.test",
+  methods: hostExtensions.gameApi,
+});
+```
+
+配置不能包含 handler、schema 或凭据，映射不会授予 capability，也不能使未映射方法变成私有方法；预加载调用仍经过相同宿主校验与配额限制。平台须把 `dist/game.preload.js` 精确挂载到该保留同源路径，加入资源白名单，并在受控 `<head>` 中、所有游戏可控标记之前输出同步经典脚本标签。上传文件不能覆盖此路径，不可添加 `async`、`defer` 或 `type="module"`。完整步骤见[使用手册](./usage.zh-CN.md#平台自动预加载)。
 
 ## 6. 生命周期
 
@@ -199,14 +215,17 @@ const session = new SandboxHostSession({
 
 ## 7. 方法调用规范
 
-游戏调用：
+内容调用已配置别名，预加载内部 client 通过不变的桥接协议路由到 `com.example.echo.echo`：
 
-```ts
-const result = await bridge.call(
-  "com.example.echo.echo",
+```js
+const controller = new AbortController();
+const result = await window.game.echo(
   { value: "hello" },
+  { signal: controller.signal, timeoutMs: 2_000 },
 );
 ```
+
+取消由内容自身创建的 `AbortController` 控制；内容不获取通用桥接 `call` 方法。
 
 宿主执行顺序：
 
@@ -229,7 +248,7 @@ const result = await bridge.call(
 
 ## 8. 事件规范
 
-插件事件只能由宿主发送给游戏：
+插件事件仅在内部运行时协议层由宿主发送给游戏，不是公开的 `window.game` 功能。宿主可发送事件，但预加载不提供内容订阅 API：
 
 ```ts
 session.emit("com.example.echo.changed", {
@@ -344,6 +363,9 @@ new SandboxHostSession({
 
 - 重复插件 ID 被拒绝
 - 重复方法/事件名被拒绝
+- 重复公开别名、保留名称和未知 `gameApi` 目标被拒绝
+- 未配置 `gameApi` 的插件不暴露别名，组合后的映射被冻结
+- 别名路由到正确的完整方法名，且不能绕过宿主 capability 校验
 - 未授予 capability 时 handler 不执行
 - 输入 schema 失败时 handler 不执行
 - 输出 schema 失败时结果不返回

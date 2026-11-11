@@ -4,7 +4,7 @@ Status: design draft v1.
 
 ## 1. Scope
 
-A plugin is a **trusted host-side extension** that exposes controlled methods and events to the game.
+A plugin is a **trusted host-side extension** that provides controlled methods and internal protocol events. Content calls explicitly configured methods through the platform-preloaded `window.game`; it installs no sandbox package or framework adapter. The preload has no public event-subscription interface.
 
 A plugin is not:
 
@@ -39,7 +39,7 @@ Plugin IDs use stable reverse-domain names:
 com.example.echo
 ```
 
-Methods and events must include the plugin namespace:
+Internal bridge method and event names must include the plugin namespace (public `window.game` aliases are configured separately in section 5.2):
 
 ```text
 com.example.echo.echo
@@ -121,23 +121,23 @@ interface PluginMethodContext {
 }
 ```
 
-The implementation should adapt `input` and `output` schemas to the current `HostMethodDefinition` and response validation. The game never receives the plugin object, host `window`, iframe DOM, or `MessagePort`.
+The implementation should adapt `input` and `output` schemas to the current `HostMethodDefinition` and response validation. The public content API never receives the plugin object, host `window`, iframe DOM, or `MessagePort`; the platform preload owns the internal client.
 
-### 5.1 Game-side SDK
+### 5.1 Shared host contract and implementation
 
-The plugin contract can be imported by the game-side SDK. The SDK infers method names, input types, and output types from the plugin object:
+Keep the contract in a trusted shared module used by host registration and the game-resource renderer, not in uploaded content. `echo.contract.ts`:
 
 ```ts
 import { z } from "zod";
 import {
-  createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
 } from "@codemao-pickcat/browser-game-sandbox";
 
-const echoPlugin = defineSandboxPlugin({
+export const echoContract = defineSandboxPlugin({
   id: "com.example.echo",
   version: "1.0.0",
+  gameApi: { echo: "echo" },
   methods: {
     echo: defineMethod({
       capability: "com.example.echo",
@@ -146,24 +146,20 @@ const echoPlugin = defineSandboxPlugin({
     }),
   },
 });
-
-const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
-const result = await sdk.echo.echo({ value: "hello" });
-// result.value: string
 ```
 
-The SDK validates inputs before sending and validates host outputs before returning them to game logic.
-
-The same contract can be bound to a host implementation:
+Bind that contract to trusted host handlers. Their input/output types are inferred, and host-side Zod validation remains authoritative:
 
 ```ts
 import {
+  SandboxHostSession,
   composeHostPlugins,
   createHostPlugin,
 } from "@codemao-pickcat/browser-game-sandbox";
+import { echoContract } from "./echo.contract";
 
 const hostExtensions = composeHostPlugins([
-  createHostPlugin(echoPlugin, {
+  createHostPlugin(echoContract, {
     echo: async (input, context) => input,
   }),
 ], {
@@ -172,11 +168,31 @@ const hostExtensions = composeHostPlugins([
 });
 
 const session = new SandboxHostSession({
-  // ...
+  // ... window, iframe and exact gameOrigin ...
   capabilities: hostExtensions.capabilities,
   methods: hostExtensions.methods,
 });
 ```
+
+Schemas and handlers stay on the trusted host. Content needs neither the contract nor a typed SDK; optional local type declarations must match the deployed `window.game` aliases. Content SDKs, including Vue adapters, are retired; see the [breaking migration](./usage.en.md#43-breaking-migration).
+
+### 5.2 Platform-preloaded window.game methods
+
+A contract may declare `gameApi: { echo: "echo" }` to expose `window.game.echo(payload, options)` through the platform preload. Keys are flat public names (`^[a-z][A-Za-z0-9_]{0,63}$`); values must be own methods of this plugin. `then`, `constructor`, `prototype` and `__proto__` are forbidden, and public names must not collide across plugins. Plugins without mappings expose nothing automatically.
+
+`composeHostPlugins` additionally returns a frozen `gameApi` mapping (public name → fully namespaced host method), for the trusted game-resource renderer to pass to `renderSandboxGamePreloadScript` using the same deployed host contract:
+
+```ts
+import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
+
+const preloadTag = renderSandboxGamePreloadScript({
+  src: "/__sandbox/game.preload.js",
+  expectedHostOrigin: "https://host.example.test",
+  methods: hostExtensions.gameApi,
+});
+```
+
+Data must contain no handlers, schemas or credentials. Aliases do not grant capabilities or make unmapped methods private; all calls retain the same host validation and quotas. The platform must mount `dist/game.preload.js` on that exact reserved same-origin route, include it in the resource allowlist, and emit the synchronous classic tag in its controlled `<head>` before all game-controlled markup. Uploaded files must not override it; do not add `async`, `defer` or `type="module"`. See the [usage guide](./usage.en.md#platform-managed-preload) for complete integration steps.
 
 ## 6. Lifecycle
 
@@ -196,14 +212,17 @@ Rules:
 
 ## 7. Method calls
 
-The game calls a namespaced method:
+Content calls the configured alias; the private preload client routes it to `com.example.echo.echo` over the unchanged bridge protocol:
 
-```ts
-const result = await bridge.call(
-  "com.example.echo.echo",
+```js
+const controller = new AbortController();
+const result = await window.game.echo(
   { value: "hello" },
+  { signal: controller.signal, timeoutMs: 2_000 },
 );
 ```
+
+Cancellation uses the content-owned `AbortController`. Content never receives a generic bridge `call` method.
 
 The host execution order is:
 
@@ -226,7 +245,7 @@ A failed step must not invoke the handler or return an unvalidated result.
 
 ## 8. Events
 
-Plugin events are host-to-game only:
+Plugin events are host-to-game only at the internal runtime protocol layer, not a public `window.game` feature. The host can emit an event; the preload provides no content subscription API:
 
 ```ts
 session.emit("com.example.echo.changed", {
@@ -327,6 +346,9 @@ Every plugin should test:
 
 - Duplicate plugin IDs are rejected
 - Duplicate method/event names are rejected
+- Duplicate public aliases, reserved names and unknown `gameApi` targets are rejected
+- Plugins without `gameApi` expose no aliases, and the composed mapping is frozen
+- Aliases route to the correct namespaced method without bypassing host capability checks
 - A missing capability never invokes the handler
 - Input schema failure never invokes the handler
 - Output schema failure is not returned to the game

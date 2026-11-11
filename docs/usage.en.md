@@ -15,9 +15,11 @@ The bridge has two phases:
 1. `window.postMessage` performs the initial handshake.
 2. A transferred `MessageChannel` carries all subsequent requests, responses, events, cancellation, and termination messages.
 
-The host is the security authority. The game-side client is only a typed convenience wrapper and must not be treated as a security boundary. Runtime protocol messages are validated with strict Zod schemas; payload size estimation and browser-origin checks remain separate runtime controls.
+The platform preload owns the internal game-side MessageChannel client; content uses only the configured `window.game` methods and never opens a bridge connection. The host is the security authority. The preload is a convenience surface, not a security boundary. Runtime protocol messages are validated with strict Zod schemas; payload size estimation and browser-origin checks remain separate runtime controls.
 
-## 2. Installation and build
+## 2. Platform installation and build
+
+These commands are for runtime contributors and trusted platform integration. Content developers do not install this package, including in Vue projects.
 
 ```bash
 npm install
@@ -57,7 +59,35 @@ Create an iframe with a stable, exact game origin. Do not use a wildcard origin.
 Create and start a host session:
 
 ```ts
-import { SandboxHostSession } from "@codemao-pickcat/browser-game-sandbox";
+import { z } from "zod";
+import {
+  SandboxHostSession,
+  defineMethod,
+  defineSandboxPlugin,
+  createHostPlugin,
+  composeHostPlugins,
+} from "@codemao-pickcat/browser-game-sandbox";
+
+const echo = defineSandboxPlugin({
+  id: "com.example.echo",
+  version: "1.0.0",
+  gameApi: { echo: "echo" }, // window.game.echo -> com.example.echo.echo
+  methods: {
+    echo: defineMethod({
+      capability: "com.example.echo",
+      input: z.object({ value: z.string() }),
+      output: z.object({ value: z.string() }),
+    }),
+  },
+});
+const extensions = composeHostPlugins([
+  createHostPlugin(echo, {
+    echo(input, { signal }) {
+      if (signal.aborted) throw new Error("Request cancelled");
+      return input;
+    },
+  }),
+], { grantedCapabilities: ["com.example.echo"] });
 
 const iframe = document.querySelector("#game-frame");
 if (!(iframe instanceof HTMLIFrameElement)) {
@@ -68,21 +98,8 @@ const session = new SandboxHostSession({
   window,
   iframe,
   gameOrigin: "https://game.example.test",
-  capabilities: ["example.echo"],
-  methods: {
-    "example.echo": {
-      capability: "example.echo",
-      validate(payload) {
-        if (!payload || typeof payload !== "object") {
-          throw new TypeError("Expected an object payload");
-        }
-      },
-      handler(payload, { signal }) {
-        if (signal.aborted) throw new Error("Request cancelled");
-        return payload;
-      },
-    },
-  },
+  capabilities: extensions.capabilities,
+  methods: extensions.methods,
   onRequestClose(reason) {
     console.log("Game requested close:", reason);
   },
@@ -93,7 +110,7 @@ iframe.src = "https://game.example.test/index.html";
 await session.connected;
 ```
 
-Start the session before assigning the iframe `src` so the host is already listening when a fast-loading plain HTML SDK announces the handshake.
+Start the session before assigning the iframe `src` so the host is already listening when the platform preload announces the handshake. The resource server must complete the preload integration in section 4 before serving the game.
 
 `gameOrigin` must be an exact `http` or `https` origin, including scheme and port when applicable. It must be cross-origin from the host page. Paths, wildcards, commas, quotes, and `*` are rejected.
 
@@ -111,6 +128,7 @@ const packagePolicy = createSandboxGamePackagePolicy({
     "game.js",
     "styles/game.css",
     "assets/logo.png",
+    "__sandbox/game.preload.js", // Reserved platform asset, never an uploaded file.
   ],
 });
 
@@ -118,6 +136,10 @@ packagePolicy.assertEntryPath("/index.html");
 
 function serveGameRequest(pathname: string): void {
   const path = packagePolicy.assertAllowedResourcePath(pathname);
+  if (path === "/__sandbox/game.preload.js") {
+    // Serve the trusted package's dist/game.preload.js, not an uploaded file.
+    return;
+  }
   // Read the game package only through the validated path.
   console.log("serve", path);
 }
@@ -142,158 +164,118 @@ The resource server must still send the same CSP on every HTML document. The hos
 
 ## 4. Game integration
 
-The game must know the exact trusted host origin. It should come from trusted runtime configuration, not from arbitrary user input.
+### Platform-managed preload
 
-```ts
-import { acceptSandboxBridge } from "@codemao-pickcat/browser-game-sandbox";
+The platform must create `window.game` before any game script runs, using explicit plugin configuration. Content developers install no sandbox package, add no preload script tag and perform no handshake:
 
-const bridge = await acceptSandboxBridge({
-  window,
-  expectedHostOrigin: "https://host.example.test",
-});
-
-const info = await bridge.call<{ protocolVersion: number }>(
-  "sandbox.getInfo",
-  {},
-);
-
-const capabilities = await bridge.call<{ capabilities: string[] }>(
-  "sandbox.getCapabilities",
-  {},
-);
-
-console.log(info.protocolVersion, capabilities.capabilities);
+```js
+const result = await window.game.echo({ value: "hello" });
 ```
 
-`acceptSandboxBridge` announces readiness to the parent with an exact `targetOrigin`, validates the parent source and origin, accepts exactly one transferred port, and sends the port-level ready message.
+Trusted plugins opt into flat global aliases through `gameApi`, as in section 3. Plugins without `gameApi` expose no global methods automatically. `composeHostPlugins()` returns a frozen mapping from each alias to its fully namespaced host method. The trusted game-resource renderer must use that same deployment's plugin configuration:
 
-### 4.1 Plain HTML game SDK
+```ts
+import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
 
-A game that does not use TypeScript or a build tool can load `dist/game.global.js` from the published package. It exposes the game-side entry as `window.CodemaoSandboxGame` while reusing the same handshake, MessageChannel, timeout, cancellation, and event implementation.
+// extensions is composed from the shared trusted host contract in section 3.
+const preloadTag = renderSandboxGamePreloadScript({
+  src: "/__sandbox/game.preload.js",
+  expectedHostOrigin: "https://host.example.test",
+  methods: extensions.gameApi,
+});
+```
+
+**The platform must implement this integration. This library includes no HTML resource server and cannot modify a cross-origin game's DOM from the parent:**
+
+1. Mount the package's `dist/game.preload.js` at the exact reserved game-origin route `/__sandbox/game.preload.js`. Uploaded resources must not override it; do not open the entire directory.
+2. Emit `preloadTag` inside the trusted renderer's `<head>`, **before all game-controlled markup**, then render game content. This is a synchronous classic script: do not add `async`, `defer` or `type="module"`. Integrate through a controlled template or an HTML parser, not unreliable string replacement over arbitrary uploaded HTML.
+3. Include `index.html`, game resources and `__sandbox/game.preload.js` in the exact resource allowlist. Retain CSP, Permissions-Policy and navigation restrictions on every HTML response. The bundle is self-contained: no import map, configuration fetch or `unsafe-inline` is needed; `script-src 'self'` and `connect-src 'none'` remain unchanged.
+4. Start the host session before navigating the iframe. The exact host origin and bindings must come from trusted startup configuration, never the uploaded game, referrer or unchecked request parameters. Preload data must contain no credentials; caches must not mix host origins or plugin versions.
+
+The preload synchronously installs a frozen, non-replaceable `window.game` containing only explicitly mapped methods. Duplicate aliases, existing globals, unknown targets, `then` and prototype-related names are rejected. Methods always return Promises and accept `{ signal, timeoutMs }` as their second argument. The default 5000ms call timeout includes handshake waiting; at most 64 calls wait before the handshake, with a default 65536-byte payload limit. Configure `handshakeTimeoutMs`, `defaultTimeoutMs`, `maxPayloadBytes` and `maxQueuedCalls` on the tag helper if needed. Cancelling one call does not cancel the shared handshake; a failed handshake is not automatically retried.
+
+Bindings are a convenience surface, **not an authorization allowlist**: game code can still construct bridge requests. Host-side capabilities, input/output Zod validation, quotas and error sanitization remain authoritative. Freezing globals is not isolation between game scripts and does not expose host functions or windows.
+
+The preload is the only supported content integration. Its private client announces readiness with an exact `targetOrigin`, validates the parent source and origin, accepts exactly one transferred port, and sends the port-level ready message. Content never supplies the host origin or opens another connection. `window.game` exposes configured plugin methods only, not generic `call`, readiness, event subscription or connection-management interfaces.
+
+### 4.1 Plain HTML without an SDK
+
+The uploaded HTML includes only its own game script; the platform inserts the preload separately, before all game-controlled markup:
 
 ```html
-<script src="/sandbox-sdk/game.global.js" defer></script>
-<script>
-  async function startGame() {
-    const game = await CodemaoSandboxGame.connectSandboxHtmlSdk({
-      expectedHostOrigin: "https://host.example.test"
-    });
-
-    const info = await game.call("sandbox.getInfo", {});
-    console.log("bridge protocol:", info.protocolVersion);
-
-    game.on("example.score.changed", (payload) => {
-      console.log("score changed", payload);
-    });
-  }
-
-  startGame().catch((error) => {
-    console.error("sandbox bridge failed", error);
-  });
-</script>
+<script src="/game.js" defer></script>
 ```
 
-An HTML page using a bundler or an import map can use the `@codemao-pickcat/browser-game-sandbox/game` ESM entry. A browser ESM page also needs an import-map entry for the package's `zod` dependency:
+In `game.js`:
 
-```html
-<script type="module">
-  import { connectSandboxHtmlSdk } from "@codemao-pickcat/browser-game-sandbox/game";
+```js
+async function startGame() {
+  const result = await window.game.echo({ value: "hello" });
+  console.log(result.value);
+}
 
-  const game = await connectSandboxHtmlSdk({
-    expectedHostOrigin: "https://host.example.test"
-  });
-  await game.call("sandbox.ping", {});
-</script>
-```
-
-`expectedHostOrigin` must come from trusted runtime configuration. Do not use `*` or infer it from `document.referrer`. Client-side validation in the plain HTML SDK is for developer feedback; the host remains responsible for capabilities, payload limits, rate limits, error sanitization, and authorization.
-
-TypeScript projects can also use `game.sdk` with the same plugin contracts as `createSandboxSdk`:
-
-```ts
-const game = await connectSandboxHtmlSdk({
-  expectedHostOrigin: "https://host.example.test",
-  plugins: { echo: echoPlugin },
-});
-
-const result = await game.sdk.echo.echo({ value: "hello" });
-```
-
-### 4.2 Vue 3 config modules and native components
-
-A Vue 3 application can keep its bridge configuration in a separate module and install the integration from the `/vue` entry point. The plugin uses Vue `provide/inject`, so any native Vue component can access the same bridge and typed SDK.
-
-`sandbox.config.ts`:
-
-```ts
-import { z } from "zod";
-import {
-  defineMethod,
-  defineSandboxPlugin,
-  type SandboxCallTransport,
-} from "@codemao-pickcat/browser-game-sandbox";
-import { defineSandboxVueConfig } from "@codemao-pickcat/browser-game-sandbox/vue";
-
-const echoPlugin = defineSandboxPlugin({
-  id: "com.example.echo",
-  version: "1.0.0",
-  methods: {
-    echo: defineMethod({
-      input: z.object({ value: z.string() }),
-      output: z.object({ value: z.string() }),
-    }),
-  },
-});
-
-const transport: SandboxCallTransport = {
-  call: async (_method, payload) => payload,
-};
-
-export default defineSandboxVueConfig({
-  transport,
-  plugins: { echo: echoPlugin },
+startGame().catch((error) => {
+  console.error("Host call failed", error.code, error.message);
 });
 ```
 
-Install the plugin at the app entry point:
+No sandbox imports, SDK script tags, import map or content-side Zod dependency are needed. A call can be made immediately; its Promise includes waiting for the platform handshake.
 
-```ts
+### 4.2 Native Vue 3 components without an SDK
+
+Vue remains the game's own framework dependency. Start the app normally, without a sandbox Vue plugin or bridge configuration module:
+
+```js
 import { createApp } from "vue";
 import App from "./App.vue";
-import sandboxConfig from "./sandbox.config";
-import { createSandboxVuePlugin } from "@codemao-pickcat/browser-game-sandbox/vue";
 
-createApp(App).use(createSandboxVuePlugin(sandboxConfig)).mount("#app");
+createApp(App).mount("#app");
 ```
 
-Call it from a native Vue component:
+A component calls the same native global directly:
 
 ```vue
-<script setup lang="ts">
-import { useSandboxReady, useSandboxSdk } from "@codemao-pickcat/browser-game-sandbox/vue";
+<script setup>
+import { ref } from "vue";
 
-const sdk = useSandboxSdk();
-const ready = useSandboxReady();
+const message = ref("");
 
-async function callHost(): Promise<void> {
-  await ready;
-  await sdk.value?.echo.echo({ value: "hello" });
+async function callHost() {
+  try {
+    const result = await window.game.echo({ value: "hello" });
+    message.value = result.value;
+  } catch (error) {
+    message.value = `${error.code}: ${error.message}`;
+  }
 }
 </script>
+
+<template>
+  <button @click="callHost">Call host</button>
+  <p>{{ message }}</p>
+</template>
 ```
 
-For a real bridge, replace `transport` with `bridge`, `bridgeOptions`, or a promise for either. The plugin updates its injected refs when `ready` resolves.
+There is no injected SDK, readiness ref or extra connection to await. For TypeScript content, the platform may supply a matching local `Window.game` declaration; it is not a reason to install the host runtime package.
+
+### 4.3 Breaking migration
+
+The entire content SDK, including Vue support, is removed rather than retained as a compatibility mode:
+
+- Removed package paths: `@codemao-pickcat/browser-game-sandbox/game`, `@codemao-pickcat/browser-game-sandbox/vue`, and `game.global.js` (formerly `dist/game.global.js` / `window.CodemaoSandboxGame`).
+- Removed root exports: `acceptSandboxBridge`, `SandboxBridgeClient`, `createSandboxSdk`, `connectSandboxHtmlSdk`, and `installSandboxGameApi`. Content must not deep-import their internal replacements.
+- Remove SDK imports, script tags, Vue plugin installation, injected SDK/ready refs and manual connection setup. Call the configured `window.game` methods directly, including for cancellation and error handling.
+- Only the root host API and `game.preload.js` platform asset remain public. Platforms must complete the preload/resource-server integration above before migrating content; there is no content-side fallback or automatic event API replacement.
+
+The internal MessageChannel client, host security checks and protocol v1 remain intact. Removing public SDKs does not remove the bridge runtime.
 
 ## 5. Calling host methods
 
-```ts
-const echoed = await bridge.call<{ value: string }>(
-  "example.echo",
-  { value: "hello" },
-);
+```js
+const echoed = await window.game.echo({ value: "hello" });
 ```
 
-Method names must match:
+Here `echo` is the configured public alias for `com.example.echo.echo`. Content cannot enumerate or invoke arbitrary methods through a generic API. Internal namespaced bridge method names must match:
 
 ```text
 ^[a-z][A-Za-z0-9._-]*$
@@ -308,48 +290,37 @@ A method is executable only when:
 
 A field inside the game payload cannot grant a capability.
 
-### 5.1 Typed plugin SDK
+### 5.1 Contracts and validation
 
-A plugin contract can be imported by the game-side SDK so method names, inputs, and outputs are inferred from the contract:
-
-```ts
-const sdk = createSandboxSdk(bridge, { echo: echoPlugin });
-const result = await sdk.echo.echo({ value: "hello" });
-// result.value is typed as string
-```
-
-The SDK validates inputs before sending and validates host outputs before returning them to game logic. The host still performs its own validation; client-side validation is not a security boundary.
+The shared contract belongs to trusted host registration and preload configuration, not a content-side SDK. `createHostPlugin` and `composeHostPlugins` preserve host input/output Zod validation and inferred handler types. The preload checks transport limits but does not ship plugin schemas to content. Any local content type declaration must match the deployed aliases and payloads; it does not grant authority or replace host validation.
 
 ## 6. Cancellation and timeouts
 
-```ts
+```js
 const controller = new AbortController();
 
-const request = bridge.call(
-  "example.echo",
+const request = window.game.echo(
   { value: "hello" },
   { signal: controller.signal, timeoutMs: 2_000 },
 );
 
 controller.abort();
-await request; // rejects with SandboxBridgeError(code === "CANCELLED")
+try {
+  await request;
+} catch (error) {
+  if (error.code !== "CANCELLED") throw error;
+}
 ```
+
+The timeout covers handshake waiting and execution. Cancelling a queued call releases its queue slot without cancelling the shared handshake; after dispatch, cancellation is forwarded to the host.
 
 The host receives an `AbortSignal`. Host handlers should stop work when it is aborted. Cancellation is cooperative; JavaScript cannot forcibly stop an arbitrary promise.
 
 ## 7. Events and termination
 
-Game-side subscription:
+Events remain part of the internal platform runtime protocol, not the public content API. `window.game` has no event subscription method. A host may emit protocol events, but content has no supported listener interface; migrate products that depended on subscriptions explicitly rather than opening a manual connection.
 
-```ts
-const unsubscribe = bridge.on("example.event", (payload) => {
-  console.log("Received event", payload);
-});
-
-unsubscribe();
-```
-
-Host-side event:
+Host-side protocol event:
 
 ```ts
 session.emit("example.event", { value: "hello" });
@@ -361,7 +332,7 @@ Terminate the sandbox:
 session.terminate("Host revoked the sandbox");
 ```
 
-Termination sends `sandbox.terminated`, closes the port, rejects pending calls, removes the host message listener, and best-effort removes the iframe when the supplied iframe supports `remove()`. It does not erase origin-persistent storage or unregister a Service Worker; those require a separate cleanup policy. A game-side termination handler cannot prevent bridge cleanup.
+Termination sends `sandbox.terminated`, closes the port, rejects pending calls, removes the host message listener, and best-effort removes the iframe when the supplied iframe supports `remove()`. It does not erase origin-persistent storage or unregister a Service Worker; those require a separate cleanup policy. Game code cannot prevent bridge cleanup.
 
 ## 8. Built-in methods
 
@@ -375,7 +346,7 @@ The core host provides these methods:
 | `sandbox.getBrowserCapabilities` | `{ capabilities }` |
 | `sandbox.requestClose` | Calls the host `onRequestClose` callback |
 
-These are runtime lifecycle methods, not platform business APIs.
+These are internal platform-runtime lifecycle methods, not public content APIs or platform business APIs. They are not automatically exposed on `window.game`; content uses only explicitly mapped plugin methods.
 
 ## 9. Security requirements
 
@@ -388,7 +359,7 @@ event.origin === gameOrigin
 event.source === iframe.contentWindow
 ```
 
-The game client must check both:
+The private client inside the platform preload must check both (content does not implement this handshake):
 
 ```ts
 event.origin === expectedHostOrigin
@@ -446,7 +417,7 @@ new SandboxHostSession({
 });
 ```
 
-The game can query them with `sandbox.getBrowserCapabilities`. This declaration does not override browser security policy; the host must enforce the same profile through iframe flags and response headers. `buildBrowserPolicy` generates sandbox tokens, iframe `allow`, CSP, Permissions-Policy, enforcement status, and warnings.
+The internal runtime protocol supports querying these declarations with `sandbox.getBrowserCapabilities`; this is not a public `window.game` method. This declaration does not override browser security policy; the host must enforce the same profile through iframe flags and response headers. `buildBrowserPolicy` generates sandbox tokens, iframe `allow`, CSP, Permissions-Policy, enforcement status, and warnings.
 
 Available browser capability IDs include:
 
@@ -497,7 +468,21 @@ The bridge uses strict Zod schemas for protocol envelopes. Unknown envelope fiel
 
 ## 11. Error handling
 
-Errors are reported as `SandboxBridgeError`:
+Native `window.game` calls reject with errors carrying `code` and `message`. The runtime uses `SandboxBridgeError` internally; content does not import its class or rely on `instanceof` checks:
+
+```js
+try {
+  await window.game.echo({ value: "hello" }, { timeoutMs: 2_000 });
+} catch (error) {
+  if (error.code === "CANCELLED") {
+    // Caller cancelled; no user-facing failure is needed.
+  } else if (error.code === "TIMEOUT") {
+    console.warn("Host call timed out");
+  } else {
+    console.error("Host call failed", error.code, error.message);
+  }
+}
+```
 
 | Code | Meaning |
 | --- | --- |

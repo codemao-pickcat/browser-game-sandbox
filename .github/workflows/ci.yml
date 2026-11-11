@@ -37,7 +37,7 @@ jobs:
         run: npm run check
 
   vue:
-    name: Vue 3 consumer build
+    name: SDK-free Vue 3 native API build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -52,7 +52,7 @@ jobs:
       - name: Install package dependencies
         run: npm ci
 
-      - name: Build Vue consumer fixture
+      - name: Build SDK-free Vue fixture
         run: npm run test:vue
 
   browser:

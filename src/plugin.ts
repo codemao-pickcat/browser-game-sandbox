@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isValidMethodName } from "./protocol.js";
+import { assertGameApiName } from "./game-api-config.js";
 
 export interface SandboxMethodLimits {
   readonly maxPayloadBytes?: number;
@@ -27,6 +28,8 @@ export interface SandboxPluginContract<
   readonly bridgeProtocol: 1;
   readonly capabilities: readonly string[];
   readonly methods: TMethods;
+  /** Explicit flat window.game aliases -> method names from this plugin. */
+  readonly gameApi?: Readonly<Record<string, keyof TMethods & string>>;
 }
 
 export type MethodInput<
@@ -54,6 +57,7 @@ export function defineSandboxPlugin<const TMethods extends SandboxPluginMethods>
   readonly version: string;
   readonly capabilities?: readonly string[];
   readonly methods: TMethods;
+  readonly gameApi?: Readonly<Record<string, keyof TMethods & string>>;
 }): SandboxPluginContract<TMethods> {
   assertPluginDefinition(
     definition.id,
@@ -67,7 +71,15 @@ export function defineSandboxPlugin<const TMethods extends SandboxPluginMethods>
     if (method.capability) capabilities.add(method.capability);
   }
 
+  for (const [name, method] of Object.entries(definition.gameApi ?? {})) {
+    assertGameApiName(name);
+    if (!Object.prototype.hasOwnProperty.call(definition.methods, method)) {
+      throw new TypeError(`Unknown game API method: ${method}`);
+    }
+  }
+
   return {
+    ...(definition.gameApi !== undefined ? { gameApi: Object.freeze({ ...definition.gameApi }) } : {}),
     id: definition.id,
     version: definition.version,
     bridgeProtocol: 1,

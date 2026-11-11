@@ -1,6 +1,6 @@
 {
   "name": "@codemao-pickcat/browser-game-sandbox",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "Bare browser sandbox host bridge for untrusted web games",
   "engines": {
     "node": ">=24"
@@ -9,21 +9,16 @@
   "license": "Apache-2.0",
   "types": "./dist/index.d.ts",
   "module": "./dist/index.js",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/game-preload.js",
+    "./dist/game.preload.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./vue": {
-      "types": "./dist/vue.d.ts",
-      "import": "./dist/vue.js"
-    },
-    "./game": {
-      "types": "./dist/html.d.ts",
-      "import": "./dist/html.js"
-    },
-    "./game.global.js": "./dist/game.global.js"
+    "./game.preload.js": "./dist/game.preload.js"
   },
   "files": [
     "dist",
@@ -34,28 +29,21 @@
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
+    "prebuild": "node scripts/clean.mjs",
     "build": "tsc -p tsconfig.json && npm run build:browser",
     "build:browser": "node scripts/build-browser.mjs",
     "test": "npm run build && node --test test/*.test.mjs",
     "check:types": "tsc -p tsconfig.tests.json --noEmit",
     "test:vue": "npm run build && npm --prefix test/vue-compat install --no-package-lock --ignore-scripts && npm --prefix test/vue-compat run build",
     "test:browser": "npm run build && playwright test -c playwright.config.mjs",
-    "test:all": "npm test && npm run check:types && npm run test:vue && npm run test:browser",
-    "check": "npm run build && npm run check:types && npm test"
+    "test:all": "npm test && npm run check:types && npm run test:vue && npm run test:browser && npm run check:package",
+    "check:package": "npm pack --dry-run --json | node scripts/verify-package.mjs",
+    "check": "npm run build && npm run check:types && npm test && npm run check:package"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "esbuild": "^0.25.12",
-    "typescript": "^7.0.2",
-    "vue": "^3.5.13"
-  },
-  "peerDependencies": {
-    "vue": "^3.3.0"
-  },
-  "peerDependenciesMeta": {
-    "vue": {
-      "optional": true
-    }
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "zod": "^4.6.7"

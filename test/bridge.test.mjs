@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SandboxBridgeError,
-  SandboxBridgeClient,
   SandboxHostSession,
-  acceptSandboxBridge,
   isBridgeInitMessage,
   isBridgeRequestMessage,
   isBridgeResponseMessage,
   isBridgeEventMessage,
 } from "../dist/index.js";
+// The bridge is private runtime code; only host APIs come from the public entry.
+import { SandboxBridgeClient, acceptSandboxBridge } from "../dist/client.js";
 
 const HOST_ORIGIN = "https://host.example.test";
 const GAME_ORIGIN = "https://game.example.test";

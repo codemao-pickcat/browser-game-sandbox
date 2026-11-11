@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import * as publicApi from "../dist/index.js";
+
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+const [packed] = JSON.parse(input);
+const files = new Set(packed.files.map(file => file.path));
+const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+assert.equal(pkg.publishConfig?.registry, "https://npm.pkg.github.com");
+assert.deepEqual(Object.keys(pkg.exports).sort(), [".", "./game.preload.js"], "Only host and platform preload entries may be published");
+assert.equal(pkg.exports["./game.preload.js"], "./dist/game.preload.js");
+for (const target of Object.values(pkg.exports).flatMap(value => typeof value === "string" ? [value] : Object.values(value))) {
+  assert.ok(files.has(target.replace(/^\.\//, "")), `Missing packed export: ${target}`);
+}
+for (const file of files) {
+  assert.ok(!/^dist\/(?:html|sdk|vue)\./.test(file) && !/^dist\/game\.global\.js(?:\.map)?$/.test(file), `Retired SDK artifact is still packed: ${file}`);
+}
+for (const name of [
+  "acceptSandboxBridge", "SandboxBridgeClient", "connectSandboxHtmlSdk", "connectSandboxGame",
+  "createSandboxSdk", "createPluginSdk", "SandboxSdkValidationError", "installSandboxGameApi",
+]) {
+  assert.equal(name in publicApi, false, `Retired root export is still public: ${name}`);
+}
+console.log(`Verified ${pkg.name}@${pkg.version}: host entry and platform preload only; no retired SDK artifacts`);

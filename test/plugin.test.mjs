@@ -2,10 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
 import {
-  SandboxSdkValidationError,
   composeHostPlugins,
   createHostPlugin,
-  createSandboxSdk,
   defineMethod,
   defineSandboxPlugin,
 } from "../dist/index.js";
@@ -23,57 +21,6 @@ function makeEchoPlugin(output = z.object({ value: z.string() })) {
     },
   });
 }
-
-test("creates a typed-at-build-time SDK with namespaced runtime calls", async () => {
-  const plugin = makeEchoPlugin();
-  const calls = [];
-  const sdk = createSandboxSdk(
-    {
-      call: async (method, payload) => {
-        calls.push({ method, payload });
-        return payload;
-      },
-    },
-    { echo: plugin },
-  );
-
-  assert.deepEqual(await sdk.echo.echo({ value: "hello" }), { value: "hello" });
-  assert.deepEqual(calls, [
-    {
-      method: "com.example.echo.echo",
-      payload: { value: "hello" },
-    },
-  ]);
-});
-
-test("validates plugin input and output at the game-side SDK seam", async () => {
-  const plugin = makeEchoPlugin();
-  let calls = 0;
-  const sdk = createSandboxSdk(
-    {
-      call: async () => {
-        calls += 1;
-        return { value: 123 };
-      },
-    },
-    { echo: plugin },
-  );
-
-  await assert.rejects(
-    sdk.echo.echo({ value: 123 }),
-    (error) =>
-      error instanceof SandboxSdkValidationError &&
-      error.direction === "input" &&
-      error.pluginId === "com.example.echo",
-  );
-  assert.equal(calls, 0);
-
-  await assert.rejects(
-    sdk.echo.echo({ value: "hello" }),
-    (error) => error instanceof SandboxSdkValidationError && error.direction === "output",
-  );
-  assert.equal(calls, 1);
-});
 
 test("composes a host plugin into the existing host method seam", async () => {
   const plugin = makeEchoPlugin();
@@ -106,24 +53,6 @@ test("composes a host plugin into the existing host method seam", async () => {
   assert.deepEqual(result, { value: "ok" });
   assert.equal(seen[0].context.pluginId, "com.example.echo");
   assert.equal(seen[0].context.requestId, "request-1");
-});
-
-test("rejects thenable SDK method names", () => {
-  const plugin = defineSandboxPlugin({
-    id: "com.example.thenable",
-    version: "1.0.0",
-    methods: {
-      then: defineMethod({
-        input: z.object({}),
-        output: z.object({ ok: z.boolean() }),
-      }),
-    },
-  });
-
-  assert.throws(
-    () => createSandboxSdk({ call: async () => ({ ok: true }) }, { plugin }),
-    /cannot be then/,
-  );
 });
 
 test("parses plugin input once in the host adapter", async () => {
