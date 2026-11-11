@@ -8,6 +8,9 @@ on:
       - "v*.*.*"
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,7 +18,8 @@ concurrency:
 jobs:
   check:
     name: Node ${{ matrix.node-version }} checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +42,8 @@ jobs:
 
   vue:
     name: SDK-free Vue 3 native API build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -57,7 +62,8 @@ jobs:
 
   browser:
     name: Chromium browser sandbox tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -72,7 +78,21 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout --kill-after=10s 180s npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "::error::Chromium installation failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Chromium installation failed; retrying in 10 seconds"
+            sleep 10
+          done
 
       - name: Run browser tests
         run: npm run test:browser

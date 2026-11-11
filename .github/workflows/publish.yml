@@ -8,23 +8,48 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: publish-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 jobs:
   publish:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     name: Test and publish GitHub npm package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     env:
       RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+      EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release must use an existing vX.Y.Z tag"
+            exit 1
+          fi
+          tag_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag does not match the successful CI commit"
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -37,7 +62,21 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout --kill-after=10s 180s npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "::error::Chromium installation failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Chromium installation failed; retrying in 10 seconds"
+            sleep 10
+          done
 
       - name: Run complete test suite
         run: npm run test:all

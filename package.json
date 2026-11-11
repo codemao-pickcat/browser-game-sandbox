@@ -1,6 +1,6 @@
 {
   "name": "@codemao-pickcat/browser-game-sandbox",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Bare browser sandbox host bridge for untrusted web games",
   "engines": {
     "node": ">=24"
