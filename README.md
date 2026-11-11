@@ -28,7 +28,7 @@ The trusted host creates an iframe with a stable, cross-origin game origin and s
 
 ## CI and publishing
 
-- Pushes and pull requests run Node checks, an SDK-free Vue 3 consumer build, and Chromium sandbox tests. CI and publishing use `ubuntu-24.04` with explicit permissions and timeouts rather than a moving `ubuntu-latest` image. Chromium installation retries at most three times, with a 180-second command timeout per attempt; installation or test failures still block publishing.
+- Pushes and pull requests run Node checks, an SDK-free Vue 3 consumer build, and Chromium sandbox tests. CI and publishing use `ubuntu-24.04` with explicit permissions and timeouts rather than a moving `ubuntu-latest` image. Browser checks and publishing run inside the official `mcr.microsoft.com/playwright:v1.64.1-noble` container with preinstalled browsers and system dependencies, avoiding runtime apt installation. The image version must match the locked Playwright version; an actual Chromium launch verifies the environment before tests. Environment or test failures still block publishing.
 - Tags matching `v*.*.*` run the full suite. The publisher accepts only successful same-repository push CI and verifies that the real version tag points to that CI commit before running package scripts. It synchronizes `package.json` to the tag version, verifies packed exports and the single `dist/game.preload.js` browser bundle, rejects retired SDK exports/artifacts, builds an npm tarball, uploads it as an artifact, and publishes to the GitHub Packages npm registry.
 - The public package surface is the ESM root host API plus `game.preload.js`, a platform-served asset, not a content SDK. There is no Vue peer dependency.
 

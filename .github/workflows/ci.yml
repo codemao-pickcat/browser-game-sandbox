@@ -64,6 +64,14 @@ jobs:
     name: Chromium browser sandbox tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host --init
+    env:
+      PLAYWRIGHT_IMAGE_VERSION: "1.64.1"
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -77,22 +85,27 @@ jobs:
       - name: Install package dependencies
         run: npm ci
 
-      - name: Install Chromium
-        timeout-minutes: 10
+      - name: Verify browser environment
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            if timeout --kill-after=10s 180s npx playwright install --with-deps chromium; then
-              exit 0
-            fi
-            if [[ "$attempt" == 3 ]]; then
-              echo "::error::Chromium installation failed after 3 attempts"
-              exit 1
-            fi
-            echo "::warning::Chromium installation failed; retrying in 10 seconds"
-            sleep 10
-          done
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          import { chromium } from '@playwright/test';
+          const require = createRequire(import.meta.url);
+          const actual = require('@playwright/test/package.json').version;
+          const expected = process.env.PLAYWRIGHT_IMAGE_VERSION;
+          if (actual !== expected) {
+            throw new Error(`Playwright ${actual} does not match container ${expected}`);
+          }
+          const browser = await chromium.launch();
+          try {
+            console.log(`Playwright ${actual}; Chromium ${browser.version()}`);
+          } finally {
+            await browser.close();
+          }
+          NODE
 
       - name: Run browser tests
         run: npm run test:browser

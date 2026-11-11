@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,8 @@ import test from "node:test";
 const workflows = new Map(["ci", "publish"].map(name => [
   name, readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"),
 ]));
+const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+const playwrightVersion = lock.packages["node_modules/@playwright/test"].version;
 
 function stepScript(source, name) {
   const lines = source.split(/\r?\n/);
@@ -27,88 +29,74 @@ function tempDirectory(t) {
   return directory;
 }
 
-function bashPath(path) {
-  return process.platform === "win32"
-    ? path.replaceAll("\\", "/").replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`)
-    : path;
-}
-
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function linesIn(path) {
-  return existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
-}
-
-function runInstaller(t, source, failures) {
+function runBrowserCheck(t, source, { version = playwrightVersion, broken = false } = {}) {
   const directory = tempDirectory(t);
-  const attempts = join(directory, "attempts");
-  const timeoutArgs = join(directory, "timeout-args");
-  const npxArgs = join(directory, "npx-args");
-  const delays = join(directory, "delays");
-  writeFileSync(attempts, "0");
-  const commands = {
-    timeout: 'printf "%s\\n" "$*" >> "$TIMEOUT_ARGS"\nshift 2\nexec "$@"',
-    npx: 'count=$(<"$ATTEMPTS_FILE")\ncount=$((count + 1))\nprintf "%s" "$count" > "$ATTEMPTS_FILE"\nprintf "%s\\n" "$*" >> "$NPX_ARGS"\nif (( count <= FAILURES )); then exit 7; fi',
-    sleep: 'printf "%s\\n" "$*" >> "$DELAYS"',
-  };
-  for (const [name, body] of Object.entries(commands)) {
-    writeFileSync(join(directory, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
-  }
-  const result = spawnSync("bash", ["-c", [
-    `export PATH=${shellQuote(bashPath(directory))}:"$PATH"`,
-    stepScript(source, "Install Chromium"),
-  ].join("\n")], {
-    encoding: "utf8", timeout: 10_000,
+  const packageDirectory = join(directory, "node_modules", "@playwright", "test");
+  const closed = join(directory, "browser-closed");
+  mkdirSync(packageDirectory, { recursive: true });
+  writeFileSync(join(packageDirectory, "package.json"), JSON.stringify({
+    name: "@playwright/test", version, type: "module",
+    exports: { ".": "./index.js", "./package.json": "./package.json" },
+  }));
+  writeFileSync(join(packageDirectory, "index.js"), `
+    import { writeFileSync } from "node:fs";
+    export const chromium = {
+      async launch() {
+        if (process.env.BROKEN_BROWSER === "true") throw new Error("Browser unavailable");
+        return {
+          version: () => "fixture-chromium",
+          close: async () => writeFileSync(process.env.BROWSER_CLOSED, "closed"),
+        };
+      },
+    };
+  `);
+  const result = spawnSync("bash", ["-c", stepScript(source, "Verify browser environment")], {
+    cwd: directory, encoding: "utf8", timeout: 10_000,
     env: {
-      ...process.env, FAILURES: String(failures), ATTEMPTS_FILE: bashPath(attempts),
-      TIMEOUT_ARGS: bashPath(timeoutArgs), NPX_ARGS: bashPath(npxArgs), DELAYS: bashPath(delays),
+      ...process.env, PLAYWRIGHT_IMAGE_VERSION: playwrightVersion,
+      BROKEN_BROWSER: String(broken), BROWSER_CLOSED: closed,
     },
   });
   assert.ifError(result.error);
-  return {
-    ...result, attempts: Number(readFileSync(attempts, "utf8")),
-    timeoutArgs: linesIn(timeoutArgs), npxArgs: linesIn(npxArgs), delays: linesIn(delays),
-  };
+  return { ...result, closed: existsSync(closed) };
 }
 
 for (const [name, source] of workflows) {
-  test(`${name} Chromium installation stops after the first success`, (t) => {
-    const result = runInstaller(t, source, 0);
+  test(`${name} checks the browser and closes it before running tests`, (t) => {
+    const result = runBrowserCheck(t, source);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.attempts, 1);
-    assert.deepEqual(result.delays, []);
-    assert.deepEqual(result.npxArgs, ["playwright install --with-deps chromium"]);
-    assert.deepEqual(result.timeoutArgs, ["--kill-after=10s 180s npx playwright install --with-deps chromium"]);
+    assert.equal(result.closed, true);
+    assert.match(result.stdout, /Chromium fixture-chromium/);
   });
 
-  test(`${name} Chromium installation retries transient failures`, (t) => {
-    const result = runInstaller(t, source, 2);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.attempts, 3);
-    assert.deepEqual(result.delays, ["10", "10"]);
-    assert.equal(result.timeoutArgs.length, 3);
-    assert.equal(result.npxArgs.length, 3);
+  test(`${name} rejects a Playwright/container version mismatch`, (t) => {
+    const result = runBrowserCheck(t, source, { version: "0.0.0" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match container/);
+    assert.equal(result.closed, false);
   });
 
-  test(`${name} Chromium installation fails closed after three failures`, (t) => {
-    const result = runInstaller(t, source, 10);
-    assert.equal(result.status, 1, result.stderr);
-    assert.equal(result.attempts, 3);
-    assert.deepEqual(result.delays, ["10", "10"]);
-    assert.match(result.stdout, /::error::Chromium installation failed after 3 attempts/);
+  test(`${name} fails closed when the preinstalled browser cannot launch`, (t) => {
+    const result = runBrowserCheck(t, source, { broken: true });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Browser unavailable/);
+    assert.equal(result.closed, false);
   });
 }
 
-test("CI and publish use the same bounded installer and a stable runner", () => {
-  assert.equal(stepScript(workflows.get("ci"), "Install Chromium"), stepScript(workflows.get("publish"), "Install Chromium"));
+test("CI and publish use matching preinstalled browsers without apt or skipped checks", () => {
+  assert.equal(stepScript(workflows.get("ci"), "Verify browser environment"), stepScript(workflows.get("publish"), "Verify browser environment"));
   for (const source of workflows.values()) {
-    assert.doesNotMatch(source, /ubuntu-latest|continue-on-error/);
+    assert.doesNotMatch(source, /ubuntu-latest|continue-on-error|playwright install|apt-get/);
     assert.match(source, /runs-on: ubuntu-24\.04/);
     assert.match(source, /timeout-minutes:/);
+    assert.match(source, /options: --ipc=host --init/);
+    assert.equal(source.match(/image: mcr\.microsoft\.com\/playwright:v([\d.]+)-noble/)[1], playwrightVersion);
+    assert.equal(source.match(/PLAYWRIGHT_IMAGE_VERSION: "([\d.]+)"/)[1], playwrightVersion);
   }
+  assert.match(workflows.get("ci"), /run: npm run test:browser/);
   const publish = workflows.get("publish");
+  assert.match(publish, /run: npm run test:all/);
   assert.match(publish, /head_repository\.full_name == github\.repository/);
   assert.ok(publish.indexOf("- name: Validate release tag") < publish.indexOf("run: npm ci"));
 });
