@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { isValidMethodName } from "./protocol.js";
+import { DEFAULT_CALL_TIMEOUT_MS, isValidMethodName } from "./protocol.js";
 import { assertGameApiName } from "./game-api-config.js";
 
 export interface SandboxMethodLimits {
   readonly maxPayloadBytes?: number;
+  /** Independent host execution limit; callers cannot extend it. */
   readonly timeoutMs?: number;
   readonly maxConcurrent?: number;
 }
@@ -15,6 +16,8 @@ export interface SandboxMethodContract<
   readonly capability?: string;
   readonly input: TInput;
   readonly output: TOutput;
+  /** End-to-end call timeout, including handshake waiting; defaults to 5000ms. */
+  readonly defaultTimeoutMs?: number | undefined;
   readonly limits?: SandboxMethodLimits;
 }
 
@@ -47,9 +50,20 @@ export function defineMethod<
   readonly capability?: string;
   readonly input: TInput;
   readonly output: TOutput;
+  readonly defaultTimeoutMs?: number | undefined;
   readonly limits?: SandboxMethodLimits;
-}): SandboxMethodContract<TInput, TOutput> {
-  return definition;
+}): SandboxMethodContract<TInput, TOutput> & { readonly defaultTimeoutMs: number } {
+  const defaultTimeoutMs = definition.defaultTimeoutMs === undefined
+    ? DEFAULT_CALL_TIMEOUT_MS
+    : definition.defaultTimeoutMs;
+  assertDefaultTimeoutMs(defaultTimeoutMs);
+  return { ...definition, defaultTimeoutMs };
+}
+
+function assertDefaultTimeoutMs(timeoutMs: number): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError("defaultTimeoutMs must be a finite positive number");
+  }
 }
 
 export function defineSandboxPlugin<const TMethods extends SandboxPluginMethods>(definition: {
@@ -121,6 +135,7 @@ function assertPluginDefinition(
       throw new TypeError(`Invalid plugin method name: ${methodName}`);
     }
     pluginMethodName(pluginId, methodName);
+    if (method.defaultTimeoutMs !== undefined) assertDefaultTimeoutMs(method.defaultTimeoutMs);
     if (method.capability && !isValidMethodName(method.capability)) {
       throw new TypeError(`Invalid plugin capability: ${method.capability}`);
     }

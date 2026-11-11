@@ -73,8 +73,9 @@ interface CapabilityDeclaration {
 interface MethodDeclaration {
   name: string;
   capability?: string;
+  defaultTimeoutMs?: number | undefined; // Defaults to 5000ms; explicit values must be finite positive
   maxPayloadBytes?: number;
-  timeoutMs?: number;
+  timeoutMs?: number;         // Optional independent host execution hard cap
   maxConcurrent?: number;
 }
 
@@ -104,6 +105,7 @@ interface PluginStartContext {
 }
 
 interface SandboxPluginMethod<I = unknown, O = unknown> {
+  defaultTimeoutMs?: number | undefined;
   capability?: string;
   input: z.ZodType<I>;
   output: z.ZodType<O>;
@@ -140,6 +142,7 @@ export const echoContract = defineSandboxPlugin({
   gameApi: { echo: "echo" },
   methods: {
     echo: defineMethod({
+      defaultTimeoutMs: 5000, // Optional; omission or undefined uses 5000ms.
       capability: "com.example.echo",
       input: z.object({ value: z.string() }),
       output: z.object({ value: z.string() }),
@@ -147,6 +150,8 @@ export const echoContract = defineSandboxPlugin({
   },
 });
 ```
+
+Top-level `defaultTimeoutMs` in `defineMethod` configurations and `SandboxMethodContract` may be omitted or `undefined`, defaulting to `5000ms`. Raw method contracts and methods without a `gameApi` alias follow the same rule. Explicit values must be finite positive numbers; `null`, zero, negative values, strings, `NaN` and infinities are invalid. This is the overridable game-side call default, not the optional independent host-side `limits.timeoutMs` hard cap.
 
 Bind that contract to trusted host handlers. Their input/output types are inferred, and host-side Zod validation remains authoritative:
 
@@ -180,7 +185,7 @@ Schemas and handlers stay on the trusted host. Content needs neither the contrac
 
 A contract may declare `gameApi: { echo: "echo" }` to expose `window.game.echo(payload, options)` through the platform preload. Keys are flat public names (`^[a-z][A-Za-z0-9_]{0,63}$`); values must be own methods of this plugin. `then`, `constructor`, `prototype` and `__proto__` are forbidden, and public names must not collide across plugins. Plugins without mappings expose nothing automatically.
 
-`composeHostPlugins` additionally returns a frozen `gameApi` mapping (public name → fully namespaced host method), for the trusted game-resource renderer to pass to `renderSandboxGamePreloadScript` using the same deployed host contract:
+`composeHostPlugins` additionally returns a frozen `gameApi` mapping whose values are frozen `{ method, defaultTimeoutMs }` bindings, not strings. For this contract it is `{ echo: { method: "com.example.echo.echo", defaultTimeoutMs: 5000 } }`; the plugin declaration stays `gameApi: { echo: "echo" }`. The trusted game-resource renderer passes this mapping to `renderSandboxGamePreloadScript` using the same deployed host contract:
 
 ```ts
 import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
@@ -191,6 +196,8 @@ const preloadTag = renderSandboxGamePreloadScript({
   methods: hostExtensions.gameApi,
 });
 ```
+
+Migration: keep the `methods: hostExtensions.gameApi` call above unchanged. Convert manually authored string bindings to `{ method, defaultTimeoutMs }` objects, with a finite positive `defaultTimeoutMs` for every binding. `SandboxGamePreloadConfig` no longer supports a shared `defaultTimeoutMs` field; remove it. Plugin composition fills omitted or `undefined` method defaults with `5000ms`; only manually authored preload bindings need to supply that resolved value themselves.
 
 Data must contain no handlers, schemas or credentials. Aliases do not grant capabilities or make unmapped methods private; all calls retain the same host validation and quotas. The platform must mount `dist/game.preload.js` on that exact reserved same-origin route, include it in the resource allowlist, and emit the synchronous classic tag in its controlled `<head>` before all game-controlled markup. Uploaded files must not override it; do not add `async`, `defer` or `type="module"`. See the [usage guide](./usage.en.md#platform-managed-preload) for complete integration steps.
 
@@ -222,7 +229,9 @@ const result = await window.game.echo(
 );
 ```
 
-Cancellation uses the content-owned `AbortController`. Content never receives a generic bridge `call` method.
+The call shape remains `window.game.xxx(payload, { signal, timeoutMs })`. Game-side timeout precedence is per-call `options.timeoutMs` > the method's `defaultTimeoutMs` (`5000ms` when omitted by the plugin). The override may shorten or lengthen the default; the selected timeout includes waiting for the handshake. `handshakeTimeoutMs` remains an independent shared-handshake limit.
+
+The optional host-side `limits.timeoutMs` remains an independent hard cap on host execution, not a game-side default. A per-call override cannot extend or disable that cap. Cancellation is unchanged: it uses the content-owned `AbortController`, does not cancel the shared handshake, and is forwarded to the host after dispatch. Handlers must respect `AbortSignal`. Content never receives a generic bridge `call` method.
 
 The host execution order is:
 
@@ -315,7 +324,7 @@ Breaking changes must use a new plugin major version, a new method name, or a ne
 - Plugins cannot manipulate the game iframe DOM.
 - Plugins cannot replace or retain the host bridge port.
 - Handlers must respect `AbortSignal`.
-- Every method has input and output schemas.
+- Every method has input and output schemas; `defaultTimeoutMs` is optional with a `5000ms` fallback, and explicit values must be finite positive numbers.
 - External calls go through a dedicated Adapter.
 - Plugin package versions are pinned and supply-chain reviewed.
 - Plugins must not leak host secrets through results, events, or errors.
@@ -347,7 +356,10 @@ Every plugin should test:
 - Duplicate plugin IDs are rejected
 - Duplicate method/event names are rejected
 - Duplicate public aliases, reserved names and unknown `gameApi` targets are rejected
-- Plugins without `gameApi` expose no aliases, and the composed mapping is frozen
+- Plugins without `gameApi` expose no aliases; the composed mapping and its `{ method, defaultTimeoutMs }` bindings are frozen
+- Omitted or `undefined` plugin method defaults become `5000ms`; explicitly invalid values and manually authored preload bindings missing a default are rejected
+- Per-call `options.timeoutMs` overrides the binding default in either direction, includes handshake waiting, and cannot override `handshakeTimeoutMs` or the host `limits.timeoutMs` hard cap
+- Preload configuration has no shared `defaultTimeoutMs` field; composition always fills in each binding's resolved default
 - Aliases route to the correct namespaced method without bypassing host capability checks
 - A missing capability never invokes the handler
 - Input schema failure never invokes the handler

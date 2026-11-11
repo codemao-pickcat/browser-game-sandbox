@@ -74,8 +74,9 @@ interface CapabilityDeclaration {
 interface MethodDeclaration {
   name: string;
   capability?: string;
+  defaultTimeoutMs?: number | undefined; // 省略时为 5000ms，显式值须为有限正数
   maxPayloadBytes?: number;
-  timeoutMs?: number;
+  timeoutMs?: number;         // 可选，独立的宿主执行硬上限
   maxConcurrent?: number;
 }
 
@@ -105,6 +106,7 @@ interface PluginStartContext {
 }
 
 interface SandboxPluginMethod<I = unknown, O = unknown> {
+  defaultTimeoutMs?: number | undefined;
   capability?: string;
   input: z.ZodType<I>;
   output: z.ZodType<O>;
@@ -141,6 +143,7 @@ export const echoContract = defineSandboxPlugin({
   gameApi: { echo: "echo" },
   methods: {
     echo: defineMethod({
+      defaultTimeoutMs: 5000, // 可省略或传 undefined，自动使用 5000ms。
       capability: "com.example.echo",
       input: z.object({ value: z.string() }),
       output: z.object({ value: z.string() }),
@@ -148,6 +151,8 @@ export const echoContract = defineSandboxPlugin({
   },
 });
 ```
+
+`defineMethod` 配置和 `SandboxMethodContract` 的顶层 `defaultTimeoutMs` 可省略或传 `undefined`，自动使用 5000ms；原始方法契约和没有 `gameApi` 别名的方法也适用。显式值必须是有限正数；`null`、零、负数、字符串、`NaN` 和无穷值均无效。它是可被覆盖的游戏侧调用默认值，不是可选且独立的宿主 `limits.timeoutMs` 硬上限。
 
 用同一份契约绑定受信任宿主处理器；输入/输出类型可推导，宿主 Zod 校验仍是最终校验方：
 
@@ -181,7 +186,7 @@ Schema 和 handler 留在受信任宿主。内容不需要引入契约或类型�
 
 契约可添加 `gameApi: { echo: "echo" }`，由平台预加载暴露为 `window.game.echo(payload, options)`。键是扁平公开名（`^[a-z][A-Za-z0-9_]{0,63}$`），值必须是当前插件 `methods` 的自有方法；`then`、`constructor`、`prototype` 和 `__proto__` 不允许使用，多个插件的公开名不得冲突。未配置映射的插件不自动暴露。
 
-`composeHostPlugins` 额外返回冻结的 `gameApi` 映射（公开名 → 完整宿主方法名），供可信游戏资源渲染器使用同一部署版本的宿主契约，传入 `renderSandboxGamePreloadScript`：
+`composeHostPlugins` 额外返回冻结的 `gameApi` 映射，值不再是字符串，而是冻结的 `{ method, defaultTimeoutMs }` 绑定。本契约的结果为 `{ echo: { method: "com.example.echo.echo", defaultTimeoutMs: 5000 } }`；插件声明仍保持 `gameApi: { echo: "echo" }`。可信游戏资源渲染器使用同一部署版本的宿主契约，将映射传入 `renderSandboxGamePreloadScript`：
 
 ```ts
 import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
@@ -192,6 +197,8 @@ const preloadTag = renderSandboxGamePreloadScript({
   methods: hostExtensions.gameApi,
 });
 ```
+
+迁移时保持上面的 `methods: hostExtensions.gameApi` 调用不变。手写字符串绑定须改成 `{ method, defaultTimeoutMs }` 对象，每个绑定都必须提供有限正数 `defaultTimeoutMs`。`SandboxGamePreloadConfig` 不再支持统一 `defaultTimeoutMs` 字段，应删除该字段。插件组合器会将方法省略或为 `undefined` 的默认值补为 5000ms；只有手写预加载绑定时需要自行携带该值。
 
 配置不能包含 handler、schema 或凭据，映射不会授予 capability，也不能使未映射方法变成私有方法；预加载调用仍经过相同宿主校验与配额限制。平台须把 `dist/game.preload.js` 精确挂载到该保留同源路径，加入资源白名单，并在受控 `<head>` 中、所有游戏可控标记之前输出同步经典脚本标签。上传文件不能覆盖此路径，不可添加 `async`、`defer` 或 `type="module"`。完整步骤见[使用手册](./usage.zh-CN.md#平台自动预加载)。
 
@@ -225,7 +232,9 @@ const result = await window.game.echo(
 );
 ```
 
-取消由内容自身创建的 `AbortController` 控制；内容不获取通用桥接 `call` 方法。
+调用形式仍为 `window.game.xxx(payload, { signal, timeoutMs })`。游戏侧超时优先级为单次 `options.timeoutMs` > 方法默认 `defaultTimeoutMs`（插件省略时为 5000ms）；覆盖值可比默认值更短或更长，选定的超时包含等待握手的时间。`handshakeTimeoutMs` 仍是独立的共享握手时限。
+
+可选的宿主 `limits.timeoutMs` 仍是独立的宿主执行硬上限，不是游戏侧默认值；单次覆盖不能延长或禁用该硬上限。取消行为不变：由内容自身创建的 `AbortController` 控制，不取消共享握手，请求发出后传给宿主，处理器必须尊重 `AbortSignal`。内容不获取通用桥接 `call` 方法。
 
 宿主执行顺序：
 
@@ -332,7 +341,7 @@ INTERNAL_ERROR
 - 插件不能直接操作游戏 iframe DOM。
 - 插件不能替换或持有宿主桥接端口。
 - 插件处理器必须尊重 `AbortSignal`。
-- 每个方法必须有输入和输出 schema。
+- 每个方法必须有输入和输出 schema；`defaultTimeoutMs` 可省略，默认 5000ms，显式值须为有限正数。
 - 外部调用必须经过专用 Adapter。
 - 插件包版本必须锁定并经过供应链审查。
 - 插件不能通过返回值、事件或错误信息泄漏宿主秘密。
@@ -364,7 +373,10 @@ new SandboxHostSession({
 - 重复插件 ID 被拒绝
 - 重复方法/事件名被拒绝
 - 重复公开别名、保留名称和未知 `gameApi` 目标被拒绝
-- 未配置 `gameApi` 的插件不暴露别名，组合后的映射被冻结
+- 未配置 `gameApi` 的插件不暴露别名，组合后的映射及其中的 `{ method, defaultTimeoutMs }` 绑定均被冻结
+- 插件方法默认超时省略或为 `undefined` 时补为 5000ms；显式非法值及缺少默认值的手写预加载绑定被拒绝
+- 单次 `options.timeoutMs` 可向上或向下覆盖绑定默认值，包含等待握手时间，但不能覆盖 `handshakeTimeoutMs` 或宿主 `limits.timeoutMs` 硬上限
+- 预加载配置没有统一 `defaultTimeoutMs` 字段，组合器始终在每个绑定内填入已解析的默认值
 - 别名路由到正确的完整方法名，且不能绕过宿主 capability 校验
 - 未授予 capability 时 handler 不执行
 - 输入 schema 失败时 handler 不执行

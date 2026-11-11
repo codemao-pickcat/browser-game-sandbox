@@ -15,7 +15,7 @@ const preloadPath = "/__sandbox/game.preload.js";
 let hostServer, gameServer, hostOrigin, gameOrigin;
 
 // Same trusted registry feeds the HTML preload configuration and the host.
-// Only public method names cross into the game, never handlers or Zod objects.
+// Only public method bindings/defaults cross into the game, never handlers or Zod objects.
 function registry() {
   const method = (extra = {}) => defineMethod({
     input: z.object({ value: z.string() }), output: z.object({ value: z.string() }), ...extra,
@@ -27,14 +27,18 @@ function registry() {
       denied: method({ capability: "test.denied" }),
       invalidOutput: method(), crash: method(),
       slow: method({ limits: { maxConcurrent: 1 } }),
+      timed: method({ defaultTimeoutMs: 30 }),
+      capped: method({ defaultTimeoutMs: 5000, limits: { timeoutMs: 30 } }),
     },
-    gameApi: { echo: "echo", denied: "denied", invalidOutput: "invalidOutput", crash: "crash", slow: "slow" },
+    gameApi: { echo: "echo", denied: "denied", invalidOutput: "invalidOutput", crash: "crash", slow: "slow", timed: "timed", capped: "capped" },
   });
   return composeHostPlugins([createHostPlugin(contract, {
     echo: (input) => { window.echoCalls = (window.echoCalls ?? 0) + 1; return input; },
     denied: (input) => { window.deniedCalls = (window.deniedCalls ?? 0) + 1; return input; },
     invalidOutput: () => ({ value: 123 }),
     crash: () => { throw new Error("SECRET host credentials"); },
+    timed: (input) => new Promise(resolve => setTimeout(() => resolve(input), 150)),
+    capped: (input) => new Promise(resolve => setTimeout(() => resolve(input), 150)),
     slow: (input, { signal }) => new Promise((resolve, reject) => {
       window.slowStarted = true;
       const timer = setTimeout(() => resolve(input), 2000);
@@ -168,6 +172,20 @@ test("native methods retain host authorization, schemas and sanitized errors", a
   assert.ok(results.every(error => !error.message.includes("SECRET")));
   assert.equal(await page.evaluate(() => window.echoCalls), 1);
   assert.equal(await page.evaluate(() => window.deniedCalls ?? 0), 0);
+});
+
+test("native calls use plugin defaults, allow overrides and retain host hard limits", async ({ page }) => {
+  const frame = await openGame(page);
+  const result = await frame.evaluate(async () => {
+    let defaultError, cappedError;
+    try { await game.timed({ value: "default" }); } catch (error) { defaultError = error.code; }
+    const extended = await game.timed({ value: "extended" }, { timeoutMs: 2000 });
+    try { await game.capped({ value: "capped" }, { timeoutMs: 2000 }); } catch (error) { cappedError = error.code; }
+    return { defaultError, extended, cappedError };
+  });
+  assert.deepEqual(result, {
+    defaultError: "TIMEOUT", extended: { value: "extended" }, cappedError: "TIMEOUT",
+  });
 });
 
 test("native calls preserve method limits, cancellation, timeouts and termination", async ({ page }) => {

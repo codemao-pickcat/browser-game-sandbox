@@ -1,7 +1,7 @@
 import { acceptSandboxBridge, type BridgeCallOptions, type SandboxBridgeClient } from "./client.js";
 import { SandboxBridgeError } from "./errors.js";
 import { parseSandboxGamePreloadConfig, type SandboxGamePreloadConfig } from "./game-api-config.js";
-import { DEFAULT_CALL_TIMEOUT_MS, DEFAULT_MAX_PAYLOAD_BYTES, estimatePayloadBytes } from "./protocol.js";
+import { DEFAULT_MAX_PAYLOAD_BYTES, estimatePayloadBytes } from "./protocol.js";
 import type { GameWindowLike } from "./transport.js";
 
 export type SandboxGameApi = Readonly<Record<string,
@@ -59,9 +59,9 @@ export function installSandboxGameApi(options: InstallSandboxGameApiOptions): Sa
     });
   }
 
-  for (const [name, method] of Object.entries(config.methods)) {
+  for (const [name, { method, defaultTimeoutMs }] of Object.entries(config.methods)) {
     api[name] = async (payload, callOptions = {}) => {
-      const timeoutMs = callOptions.timeoutMs ?? config.defaultTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+      const timeoutMs = callOptions.timeoutMs ?? defaultTimeoutMs;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new SandboxBridgeError("INVALID_MESSAGE", "timeoutMs must be positive");
       }

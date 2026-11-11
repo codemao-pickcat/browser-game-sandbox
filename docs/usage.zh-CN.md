@@ -74,6 +74,7 @@ const echo = defineSandboxPlugin({
   gameApi: { echo: "echo" }, // window.game.echo -> com.example.echo.echo
   methods: {
     echo: defineMethod({
+      defaultTimeoutMs: 5000, // 可省略或传 undefined，自动使用 5000ms。
       capability: "com.example.echo",
       input: z.object({ value: z.string() }),
       output: z.object({ value: z.string() }),
@@ -172,7 +173,7 @@ function serveGameRequest(pathname: string): void {
 const result = await window.game.echo({ value: "hello" });
 ```
 
-受信任插件通过 `gameApi` 显式声明扁平方法名到插件方法的映射，如第 3 节所示；未声明 `gameApi` 的插件不会自动暴露全局方法。`composeHostPlugins()` 返回冻结的「公开别名 → 完整宿主方法名」映射。可信游戏资源渲染器必须使用与宿主同一部署版本的插件配置：
+受信任插件通过 `gameApi` 显式声明扁平方法名到插件方法的映射，如第 3 节所示；未声明 `gameApi` 的插件不会自动暴露全局方法。`composeHostPlugins()` 返回冻结的「公开别名 → 方法绑定」映射，每个绑定也是冻结对象，含完整宿主方法名 `method` 和已补齐的 `defaultTimeoutMs`（插件省略或传 `undefined` 时为 5000ms）。本例的 `extensions.gameApi` 为 `{ echo: { method: "com.example.echo.echo", defaultTimeoutMs: 5000 } }`；插件声明仍保持 `gameApi: { echo: "echo" }`。可信游戏资源渲染器必须使用与宿主同一部署版本的插件配置：
 
 ```ts
 import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
@@ -192,7 +193,7 @@ const preloadTag = renderSandboxGamePreloadScript({
 3. 资源白名单同时列出 `index.html`、游戏资源和 `__sandbox/game.preload.js`，保留每个 HTML 响应的 CSP、Permissions-Policy 和导航限制。预加载包自包含，无需 import map、配置 fetch 或 `unsafe-inline`；`script-src 'self'`、`connect-src 'none'` 可保持不变。
 4. 在导航到游戏前启动宿主会话。精确宿主 origin、方法映射来自可信启动配置，不来自上传包、referrer 或未经校验的请求参数；预加载配置不得含凭据，缓存不得混用不同宿主/插件版本的配置。
 
-`window.game` 会同步建立为不可替换的冻结对象，且只包含显式映射的方法；名称冲突、已有全局、未知目标和 `then`/原型相关保留名会报错。方法始终返回 Promise，可传第二个参数 `{ signal, timeoutMs }`。默认调用超时 5000ms，包含等待握手的时间；握手前最多等待 64 个调用、payload 默认上限 65536 字节。标签配置可用 `handshakeTimeoutMs`、`defaultTimeoutMs`、`maxPayloadBytes`、`maxQueuedCalls` 调整；单次取消不取消共享握手，握手失败不自动重连。
+`window.game` 会同步建立为不可替换的冻结对象，且只包含显式映射的方法；名称冲突、已有全局、未知目标和 `then`/原型相关保留名会报错。方法始终返回 Promise，可传第二个参数 `{ signal, timeoutMs }`。插件方法的 `defaultTimeoutMs` 可省略或传 `undefined`，组合器会补成 5000ms；预加载方法绑定始终携带已补齐的有限正数。单次 `options.timeoutMs` 可覆盖该默认值，调用超时包含等待握手的时间；握手前最多等待 64 个调用、payload 默认上限 65536 字节。标签配置可用独立的 `handshakeTimeoutMs`、`maxPayloadBytes`、`maxQueuedCalls` 调整；`SandboxGamePreloadConfig` 不再支持统一 `defaultTimeoutMs` 字段。单次取消不取消共享握手，握手失败不自动重连。
 
 映射只控制便利接口，**不是权限 allowlist**；游戏仍可自行构造桥接请求，最终授权、输入输出 Zod、限流和错误脱敏始终由宿主执行。冻结全局不构成游戏脚本之间的安全隔离，也不暴露宿主函数或窗口。
 
@@ -260,6 +261,8 @@ async function callHost() {
 
 ### 4.3 破坏性迁移
 
+迁移方法级超时：`defineMethod` / `SandboxMethodContract` 可添加顶层 `defaultTimeoutMs` 自定义超时；省略或传 `undefined` 自动使用 5000ms，显式值必须是有限正数。插件声明仍保持 `gameApi: { echo: "echo" }`；组合后的 `gameApi` 值由字符串改为冻结的 `{ method: "com.example.echo.echo", defaultTimeoutMs: 5000 }` 对象。`renderSandboxGamePreloadScript({ methods: extensions.gameApi, ... })` 调用不变；手写字符串绑定须改为对象并为每项提供必填的 `defaultTimeoutMs`，删除统一的 `SandboxGamePreloadConfig.defaultTimeoutMs`。游戏调用仍保持 `window.game.xxx(payload, { signal, timeoutMs })`。
+
 内容侧 SDK（包括 Vue 支持）彻底移除，不保留兼容模式：
 
 - 已移除包路径：`@codemao-pickcat/browser-game-sandbox/game`、`@codemao-pickcat/browser-game-sandbox/vue` 和 `game.global.js`（原 `dist/game.global.js` / `window.CodemaoSandboxGame`）。
@@ -292,7 +295,7 @@ const echoed = await window.game.echo({ value: "hello" });
 
 ### 5.1 契约与校验
 
-共享契约属于受信任宿主注册与预加载配置，不是内容侧 SDK。`createHostPlugin` 和 `composeHostPlugins` 保留宿主输入/输出 Zod 校验和处理器类型推导。预加载脚本检查传输限制，不向内容分发插件 schema。内容本地类型声明必须与已部署的别名和 payload 一致，但不能授予权限或替代宿主校验。
+共享契约属于受信任宿主注册与预加载配置，不是内容侧 SDK。插件方法的 `defineMethod` 配置和 `SandboxMethodContract` 可包含顶层 `defaultTimeoutMs`；省略或传 `undefined` 时自动使用 5000ms，显式值必须是有限正数。原始方法契约不经 `defineMethod` 也适用，包括没有 `gameApi` 别名的方法。`createHostPlugin` 和 `composeHostPlugins` 保留宿主输入/输出 Zod 校验和处理器类型推导。预加载脚本检查传输限制，不向内容分发插件 schema。内容本地类型声明必须与已部署的别名和 payload 一致，但不能授予权限或替代宿主校验。
 
 ## 6. 取消和超时
 
@@ -312,7 +315,9 @@ try {
 }
 ```
 
-超时覆盖等待握手和执行的总时长；取消排队调用会释放队列位置，不会取消共享握手。请求已发出后，取消会继续传给宿主。
+游戏侧超时优先级为单次 `options.timeoutMs` > 方法默认 `defaultTimeoutMs`（插件省略时为 5000ms）；覆盖值可比默认值更短或更长。选定的超时覆盖等待握手和执行的总时长。`handshakeTimeoutMs` 单独限制共享握手，不受单次调用超时覆盖。
+
+宿主可选的 `limits.timeoutMs` 是独立的宿主执行硬上限，不是游戏侧默认值；单次调用即使设置更长超时，也不能延长或禁用该硬上限。取消排队调用会释放队列位置，不会取消共享握手。请求已发出后，取消会继续传给宿主。
 
 宿主处理器会收到 `AbortSignal`。宿主方法应在 signal 被取消后停止工作。取消是协作式的，JavaScript 无法强制终止任意 Promise。
 

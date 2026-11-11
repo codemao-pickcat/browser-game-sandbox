@@ -14,6 +14,7 @@ function makeEchoPlugin(output = z.object({ value: z.string() })) {
     version: "1.0.0",
     methods: {
       echo: defineMethod({
+        defaultTimeoutMs: 5000,
         capability: "com.example.echo",
         input: z.object({ value: z.string() }),
         output,
@@ -62,6 +63,7 @@ test("parses plugin input once in the host adapter", async () => {
     version: "1.0.0",
     methods: {
       echo: defineMethod({
+        defaultTimeoutMs: 5000,
         input: z.object({ value: z.string() }).transform((value) => {
           transforms += 1;
           return value;
@@ -100,6 +102,7 @@ test("carries plugin method limits into the host adapter", () => {
     version: "1.0.0",
     methods: {
       slow: defineMethod({
+        defaultTimeoutMs: 500,
         input: z.object({}),
         output: z.object({ ok: z.boolean() }),
         limits: {
@@ -125,6 +128,7 @@ test("rejects prototype-chain handler fallthrough", () => {
     version: "1.0.0",
     methods: {
       toString: defineMethod({
+        defaultTimeoutMs: 5000,
         input: z.object({}),
         output: z.object({ ok: z.boolean() }),
       }),
@@ -135,6 +139,45 @@ test("rejects prototype-chain handler fallthrough", () => {
     () => composeHostPlugins([createHostPlugin(plugin, {})]),
     /Missing handler/,
   );
+});
+
+test("fills omitted method timeouts without mutating the supplied definition", () => {
+  for (const definition of [
+    { input: z.string(), output: z.string() },
+    { input: z.string(), output: z.string(), defaultTimeoutMs: undefined },
+  ]) {
+    const method = defineMethod(definition);
+    assert.equal(method.defaultTimeoutMs, 5000);
+    assert.equal(definition.defaultTimeoutMs, undefined);
+    const plugin = defineSandboxPlugin({
+      id: "com.example.default", version: "1.0.0",
+      methods: { echo: definition }, gameApi: { echo: "echo" },
+    });
+    const composed = composeHostPlugins([createHostPlugin(plugin, { echo: (input) => input })]);
+    assert.deepEqual(composed.gameApi.echo, { method: "com.example.default.echo", defaultTimeoutMs: 5000 });
+    // Raw JavaScript contracts can bypass both helpers and still get defaults.
+    const raw = composeHostPlugins([createHostPlugin({
+      ...plugin, methods: { echo: definition },
+    }, { echo: (input) => input })]);
+    assert.equal(raw.gameApi.echo.defaultTimeoutMs, 5000);
+  }
+});
+
+test("rejects explicitly invalid plugin method defaults", () => {
+  for (const defaultTimeoutMs of [null, 0, -1, NaN, Infinity, -Infinity, "", "1000"]) {
+    const method = { input: z.string(), output: z.string(), defaultTimeoutMs };
+    assert.throws(() => defineMethod(method), /defaultTimeoutMs/);
+    const definition = {
+      id: "com.example.timeout", version: "1.0.0", methods: { echo: method },
+    };
+    assert.throws(() => defineSandboxPlugin(definition), /defaultTimeoutMs/);
+    // JavaScript callers can bypass both definition helpers. Composition must
+    // also reject invalid defaults, even for methods not exposed on window.game.
+    assert.throws(() => composeHostPlugins([createHostPlugin({
+      ...definition, bridgeProtocol: 1, capabilities: [],
+    }, { echo: (input) => input })]), /defaultTimeoutMs/);
+  }
+  assert.equal(defineMethod({ input: z.string(), output: z.string(), defaultTimeoutMs: 250 }).defaultTimeoutMs, 250);
 });
 
 test("rejects duplicate plugin IDs and duplicate full method names", () => {

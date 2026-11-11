@@ -147,7 +147,10 @@ function gameHtml() {
   <body>
     ${renderSandboxGamePreloadScript({
       src: "/dist/game.preload.js", expectedHostOrigin: hostOrigin,
-      methods: { ping: "sandbox.ping", echo: "test.echo" },
+      methods: {
+        ping: { method: "sandbox.ping", defaultTimeoutMs: 5000 },
+        echo: { method: "test.echo", defaultTimeoutMs: 5000 },
+      },
     })}
     <div id="bridge">pending</div>
     <div id="local-storage">pending</div>

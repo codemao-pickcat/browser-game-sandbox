@@ -1,4 +1,4 @@
-import { isValidMethodName } from "./protocol.js";
+import { DEFAULT_CALL_TIMEOUT_MS, isValidMethodName } from "./protocol.js";
 import { assertGameApiName, type SandboxGameApiBindings } from "./game-api-config.js";
 import {
   pluginMethodName,
@@ -55,7 +55,7 @@ export function composeHostPlugins(
   const declaredCapabilities = new Set<string>();
   const methods: Record<string, HostMethodDefinition> = Object.create(null);
   const pluginIds = new Set<string>();
-  const gameApi: Record<string, string> = Object.create(null);
+  const gameApi: Record<string, SandboxGameApiBindings[string]> = Object.create(null);
 
   for (const capability of options.grantedCapabilities ?? []) {
     if (!isValidMethodName(capability)) {
@@ -78,7 +78,11 @@ export function composeHostPlugins(
       if (Object.prototype.hasOwnProperty.call(gameApi, name)) {
         throw new TypeError(`Duplicate game API name: ${name}`);
       }
-      gameApi[name] = pluginMethodName(contract.id, method);
+      const defaultTimeoutMs = contract.methods[method]!.defaultTimeoutMs;
+      gameApi[name] = Object.freeze({
+        method: pluginMethodName(contract.id, method),
+        defaultTimeoutMs: defaultTimeoutMs === undefined ? DEFAULT_CALL_TIMEOUT_MS : defaultTimeoutMs,
+      });
     }
 
     for (const capability of contract.capabilities) {
@@ -90,6 +94,10 @@ export function composeHostPlugins(
 
     for (const [methodName, method] of Object.entries(contract.methods)) {
       const fullName = pluginMethodName(contract.id, methodName);
+      if (method.defaultTimeoutMs !== undefined &&
+        (!Number.isFinite(method.defaultTimeoutMs) || method.defaultTimeoutMs <= 0)) {
+        throw new TypeError(`Invalid defaultTimeoutMs for plugin method: ${fullName}`);
+      }
       if (Object.prototype.hasOwnProperty.call(methods, fullName)) {
         throw new TypeError(`Duplicate plugin method: ${fullName}`);
       }

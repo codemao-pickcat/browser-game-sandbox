@@ -1,23 +1,29 @@
 import { z } from "zod";
 import { assertValidOrigin, isValidMethodName } from "./protocol.js";
 
-/** Public name -> fully namespaced host method. These bindings do not grant access. */
-export type SandboxGameApiBindings = Readonly<Record<string, string>>;
+export interface SandboxGameApiBinding {
+  readonly method: string;
+  readonly defaultTimeoutMs: number;
+}
+
+/** Public name -> host method and call default. These bindings do not grant access. */
+export type SandboxGameApiBindings = Readonly<Record<string, SandboxGameApiBinding>>;
 
 export interface SandboxGamePreloadConfig {
   readonly expectedHostOrigin: string;
   readonly methods: SandboxGameApiBindings;
   readonly handshakeTimeoutMs?: number;
-  readonly defaultTimeoutMs?: number;
   readonly maxPayloadBytes?: number;
   readonly maxQueuedCalls?: number;
 }
 
 const configSchema = z.object({
   expectedHostOrigin: z.string(),
-  methods: z.record(z.string(), z.string()),
-  handshakeTimeoutMs: z.number().finite().positive().optional(),
-  defaultTimeoutMs: z.number().finite().positive().optional(),
+  methods: z.record(z.string(), z.object({
+    method: z.string(),
+    defaultTimeoutMs: z.number().positive(),
+  }).strict()),
+  handshakeTimeoutMs: z.number().positive().optional(),
   maxPayloadBytes: z.number().int().positive().refine(Number.isSafeInteger).optional(),
   maxQueuedCalls: z.number().int().min(1).max(1024).optional(),
 }).strict();
@@ -41,17 +47,16 @@ export function parseSandboxGamePreloadConfig(value: unknown): SandboxGamePreloa
   if (Object.keys(config.methods).length > 256) {
     throw new TypeError("Game API cannot expose more than 256 methods");
   }
-  const methods: Record<string, string> = Object.create(null);
-  for (const [name, method] of Object.entries(config.methods)) {
+  const methods: Record<string, SandboxGameApiBinding> = Object.create(null);
+  for (const [name, binding] of Object.entries(config.methods)) {
     assertGameApiName(name);
-    if (!isValidMethodName(method)) throw new TypeError(`Invalid game API method: ${method}`);
-    methods[name] = method;
+    if (!isValidMethodName(binding.method)) throw new TypeError(`Invalid game API method: ${binding.method}`);
+    methods[name] = Object.freeze({ ...binding });
   }
   return {
     expectedHostOrigin: config.expectedHostOrigin,
     methods: Object.freeze(methods),
     ...(config.handshakeTimeoutMs !== undefined ? { handshakeTimeoutMs: config.handshakeTimeoutMs } : {}),
-    ...(config.defaultTimeoutMs !== undefined ? { defaultTimeoutMs: config.defaultTimeoutMs } : {}),
     ...(config.maxPayloadBytes !== undefined ? { maxPayloadBytes: config.maxPayloadBytes } : {}),
     ...(config.maxQueuedCalls !== undefined ? { maxQueuedCalls: config.maxQueuedCalls } : {}),
   };

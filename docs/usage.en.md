@@ -74,6 +74,7 @@ const echo = defineSandboxPlugin({
   gameApi: { echo: "echo" }, // window.game.echo -> com.example.echo.echo
   methods: {
     echo: defineMethod({
+      defaultTimeoutMs: 5000, // Optional; omission or undefined uses 5000ms.
       capability: "com.example.echo",
       input: z.object({ value: z.string() }),
       output: z.object({ value: z.string() }),
@@ -172,7 +173,7 @@ The platform must create `window.game` before any game script runs, using explic
 const result = await window.game.echo({ value: "hello" });
 ```
 
-Trusted plugins opt into flat global aliases through `gameApi`, as in section 3. Plugins without `gameApi` expose no global methods automatically. `composeHostPlugins()` returns a frozen mapping from each alias to its fully namespaced host method. The trusted game-resource renderer must use that same deployment's plugin configuration:
+Trusted plugins opt into flat global aliases through `gameApi`, as in section 3. Plugins without `gameApi` expose no global methods automatically. `composeHostPlugins()` returns a frozen mapping from each alias to a frozen binding containing its fully namespaced host `method` and the resolved `defaultTimeoutMs` (`5000ms` when the plugin omits it or supplies `undefined`). For this example, `extensions.gameApi` is `{ echo: { method: "com.example.echo.echo", defaultTimeoutMs: 5000 } }`; the plugin declaration remains `gameApi: { echo: "echo" }`. The trusted game-resource renderer must use that same deployment's plugin configuration:
 
 ```ts
 import { renderSandboxGamePreloadScript } from "@codemao-pickcat/browser-game-sandbox";
@@ -192,7 +193,7 @@ const preloadTag = renderSandboxGamePreloadScript({
 3. Include `index.html`, game resources and `__sandbox/game.preload.js` in the exact resource allowlist. Retain CSP, Permissions-Policy and navigation restrictions on every HTML response. The bundle is self-contained: no import map, configuration fetch or `unsafe-inline` is needed; `script-src 'self'` and `connect-src 'none'` remain unchanged.
 4. Start the host session before navigating the iframe. The exact host origin and bindings must come from trusted startup configuration, never the uploaded game, referrer or unchecked request parameters. Preload data must contain no credentials; caches must not mix host origins or plugin versions.
 
-The preload synchronously installs a frozen, non-replaceable `window.game` containing only explicitly mapped methods. Duplicate aliases, existing globals, unknown targets, `then` and prototype-related names are rejected. Methods always return Promises and accept `{ signal, timeoutMs }` as their second argument. The default 5000ms call timeout includes handshake waiting; at most 64 calls wait before the handshake, with a default 65536-byte payload limit. Configure `handshakeTimeoutMs`, `defaultTimeoutMs`, `maxPayloadBytes` and `maxQueuedCalls` on the tag helper if needed. Cancelling one call does not cancel the shared handshake; a failed handshake is not automatically retried.
+The preload synchronously installs a frozen, non-replaceable `window.game` containing only explicitly mapped methods. Duplicate aliases, existing globals, unknown targets, `then` and prototype-related names are rejected. Methods always return Promises and accept `{ signal, timeoutMs }` as their second argument. Plugin method `defaultTimeoutMs` may be omitted or `undefined`; composition fills it with `5000ms`, so each preload binding always carries a resolved finite positive default. A per-call `options.timeoutMs` overrides it. The call timeout includes handshake waiting. At most 64 calls wait before the handshake, with a default 65536-byte payload limit. Configure the independent `handshakeTimeoutMs`, `maxPayloadBytes` and `maxQueuedCalls` on the tag helper if needed; `SandboxGamePreloadConfig` has no shared `defaultTimeoutMs` field. Cancelling one call does not cancel the shared handshake; a failed handshake is not automatically retried.
 
 Bindings are a convenience surface, **not an authorization allowlist**: game code can still construct bridge requests. Host-side capabilities, input/output Zod validation, quotas and error sanitization remain authoritative. Freezing globals is not isolation between game scripts and does not expose host functions or windows.
 
@@ -260,6 +261,8 @@ There is no injected SDK, readiness ref or extra connection to await. For TypeSc
 
 ### 4.3 Breaking migration
 
+For per-method timeouts, optionally add top-level `defaultTimeoutMs` to `defineMethod` / `SandboxMethodContract`. Omission or `undefined` uses `5000ms`; explicitly supplied values must be finite positive numbers. Plugin `gameApi: { echo: "echo" }` declarations stay unchanged. Composed `gameApi` values change from strings to frozen `{ method: "com.example.echo.echo", defaultTimeoutMs: 5000 }` objects. Keep `renderSandboxGamePreloadScript({ methods: extensions.gameApi, ... })` unchanged; convert any manually authored string bindings to objects with a required `defaultTimeoutMs`, and remove the shared `SandboxGamePreloadConfig.defaultTimeoutMs`. Keep `window.game.xxx(payload, { signal, timeoutMs })` calls unchanged.
+
 The entire content SDK, including Vue support, is removed rather than retained as a compatibility mode:
 
 - Removed package paths: `@codemao-pickcat/browser-game-sandbox/game`, `@codemao-pickcat/browser-game-sandbox/vue`, and `game.global.js` (formerly `dist/game.global.js` / `window.CodemaoSandboxGame`).
@@ -292,7 +295,7 @@ A field inside the game payload cannot grant a capability.
 
 ### 5.1 Contracts and validation
 
-The shared contract belongs to trusted host registration and preload configuration, not a content-side SDK. `createHostPlugin` and `composeHostPlugins` preserve host input/output Zod validation and inferred handler types. The preload checks transport limits but does not ship plugin schemas to content. Any local content type declaration must match the deployed aliases and payloads; it does not grant authority or replace host validation.
+The shared contract belongs to trusted host registration and preload configuration, not a content-side SDK. Plugin method `defineMethod` configurations and `SandboxMethodContract` may include a top-level `defaultTimeoutMs`. Omission or `undefined` uses `5000ms`; explicitly supplied values must be finite positive numbers. Raw method contracts that bypass `defineMethod` follow the same rule, including methods without a `gameApi` alias. `createHostPlugin` and `composeHostPlugins` preserve host input/output Zod validation and inferred handler types. The preload checks transport limits but does not ship plugin schemas to content. Any local content type declaration must match the deployed aliases and payloads; it does not grant authority or replace host validation.
 
 ## 6. Cancellation and timeouts
 
@@ -312,7 +315,9 @@ try {
 }
 ```
 
-The timeout covers handshake waiting and execution. Cancelling a queued call releases its queue slot without cancelling the shared handshake; after dispatch, cancellation is forwarded to the host.
+The game-side timeout precedence is per-call `options.timeoutMs` > the method's `defaultTimeoutMs` (`5000ms` when omitted by the plugin). An override may be shorter or longer than that default. The selected timeout covers handshake waiting and execution. `handshakeTimeoutMs` separately limits the shared handshake and is not overridden by a call timeout.
+
+The optional host-side `limits.timeoutMs` is an independent hard cap on host execution, not the game-side default. A longer per-call override cannot extend or disable that host cap. Cancelling a queued call releases its queue slot without cancelling the shared handshake; after dispatch, cancellation is forwarded to the host.
 
 The host receives an `AbortSignal`. Host handlers should stop work when it is aborted. Cancellation is cooperative; JavaScript cannot forcibly stop an arbitrary promise.
 

@@ -21,6 +21,7 @@ const echoPlugin = defineSandboxPlugin({
   version: "1.0.0",
   methods: {
     echo: defineMethod({
+      defaultTimeoutMs: 5000,
       capability: "com.example.echo",
       input: z.object({ value: z.string() }),
       output: z.object({ value: z.string() }),
@@ -41,7 +42,27 @@ const hostPlugin = createHostPlugin(echoPlugin, {
     return input;
   },
 });
+const defaultMethod = defineMethod({ input: z.string(), output: z.string() });
+const filledTimeout: number = defaultMethod.defaultTimeoutMs;
+void filledTimeout;
+defineMethod({ input: z.string(), output: z.string(), defaultTimeoutMs: undefined });
+const rawPlugin = defineSandboxPlugin({
+  id: "com.example.defaulttimeout",
+  version: "1.0.0",
+  methods: {
+    echo: { input: z.string(), output: z.string() },
+  },
+  gameApi: { echo: "echo" },
+});
+const rawExtensions = composeHostPlugins([createHostPlugin(rawPlugin, { echo: (input) => input })]);
+const rawTimeout: number = rawExtensions.gameApi.echo!.defaultTimeoutMs;
+void rawTimeout;
+
 const extensions = composeHostPlugins([hostPlugin]);
+const timeout: number = extensions.gameApi.echo!.defaultTimeoutMs;
+const target: string = extensions.gameApi.echo!.method;
+void timeout;
+void target;
 renderSandboxGamePreloadScript({
   src: "/sandbox/game.preload.js",
   expectedHostOrigin: "https://host.example.test",

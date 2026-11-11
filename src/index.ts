@@ -4,6 +4,7 @@ export * from "./host.js";
 export * from "./host-plugin.js";
 export {
   renderSandboxGamePreloadScript,
+  type SandboxGameApiBinding,
   type SandboxGameApiBindings,
   type SandboxGamePreloadConfig,
 } from "./game-api-config.js";
