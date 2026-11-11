@@ -52,7 +52,7 @@ jobs:
             echo "::error::Release must use an existing vX.Y.Z tag"
             exit 1
           fi
-          tag_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          tag_sha="$(git -c "safe.directory=$GITHUB_WORKSPACE" rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
           if [[ "$tag_sha" != "$EXPECTED_SHA" ]]; then
             echo "::error::Release tag does not match the successful CI commit"
             exit 1

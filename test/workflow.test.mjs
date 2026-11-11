@@ -119,15 +119,21 @@ test("publish accepts only a real version tag at the successful CI commit", (t) 
   git("branch", "v0.2.3");
   git("commit", "--allow-empty", "--quiet", "-m", "second");
   const otherSha = git("rev-parse", "HEAD");
-  const verify = (tag, expectedSha) => {
+  const verify = (tag, expectedSha, differentOwner = false) => {
     const result = spawnSync("bash", ["-c", stepScript(workflows.get("publish"), "Validate release tag")], {
-      cwd: directory, env: { ...env, RELEASE_TAG: tag, EXPECTED_SHA: expectedSha },
+      cwd: directory, env: {
+        ...env, RELEASE_TAG: tag, EXPECTED_SHA: expectedSha, GITHUB_WORKSPACE: directory.replaceAll("\\", "/"),
+        GIT_TEST_ASSUME_DIFFERENT_OWNER: differentOwner ? "1" : "0",
+      },
       encoding: "utf8", timeout: 10_000,
     });
     assert.ifError(result.error);
     return result;
   };
   for (const tag of ["v0.2.1", "v0.2.2"]) assert.equal(verify(tag, sha).status, 0);
+  const container = verify("v0.2.1", sha, true);
+  assert.equal(container.status, 0, container.stderr);
+  assert.notEqual(verify("v0.2.1", otherSha, true).status, 0);
   for (const tag of ["main", "v0.2.1;echo unsafe", "v0.2.3", "v0.2.9"]) {
     assert.notEqual(verify(tag, sha).status, 0);
   }
