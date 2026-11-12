@@ -35,7 +35,7 @@ test("builds contain no stale HTML, Vue or typed SDK artifacts", async () => {
 
 test("publishes only the host entry and platform preload, without Vue package dependencies", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(pkg.exports).sort(), [".", "./game.preload.js"]);
+  assert.deepEqual(Object.keys(pkg.exports).sort(), [".", "./game.preload.js", "./package.runtime.js"]);
   for (const field of ["dependencies", "devDependencies", "peerDependencies", "peerDependenciesMeta"]) {
     assert.equal(pkg[field]?.vue, undefined, `Unnecessary root Vue dependency: ${field}`);
   }
@@ -62,7 +62,7 @@ test("prebuild removes old dist outputs without touching sibling files", async (
 
 test("package verifier fails closed on retired artifacts in an otherwise valid package", () => {
   const script = fileURLToPath(new URL("../scripts/verify-package.mjs", import.meta.url));
-  const files = ["dist/index.d.ts", "dist/index.js", "dist/game.preload.js"].map(path => ({ path }));
+  const files = ["dist/index.d.ts", "dist/index.js", "dist/game.preload.js", "dist/package.runtime.js", "dist/package-bootstrap-source.js"].map(path => ({ path }));
   const verify = (entries) => spawnSync(process.execPath, [script], {
     input: JSON.stringify([{ files: entries }]), encoding: "utf8",
   });

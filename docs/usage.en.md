@@ -2,6 +2,8 @@
 
 This guide documents the bare sandbox runtime. It covers the trusted host, the untrusted game iframe, and the host bridge. It does not define platform accounts, publishing, rooms, cloud storage, or other business APIs.
 
+For the new **opaque offline-package entry**, including pure Node/browser preparation, scope-bound string storage and its explicit compatibility/network limits, see [Offline package runtime](./offline-package.zh-CN.md). The rest of this guide describes the existing cross-origin HTTP-resource integration; its Origin checks are unchanged.
+
 ## 1. Runtime model
 
 ```text

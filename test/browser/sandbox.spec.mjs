@@ -50,7 +50,8 @@ function contentType(pathname) {
 
 async function serveDist(requestPath, response) {
   const relativePath = requestPath.slice("/dist/".length);
-  const filePath = resolve(repoRoot, "dist", relativePath);
+  // Exercise the same host exports through the published browser bundle.
+  const filePath = resolve(repoRoot, "dist", relativePath === "index.js" ? "package.runtime.js" : relativePath);
   const distRoot = resolve(repoRoot, "dist") + sep;
   if (!filePath.startsWith(distRoot)) {
     response.writeHead(404);

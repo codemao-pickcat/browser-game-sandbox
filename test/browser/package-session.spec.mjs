@@ -1,0 +1,301 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import dgram from "node:dgram";
+import { readFile } from "node:fs/promises";
+import { test, expect } from "@playwright/test";
+
+let server, origin, udp, stunPort;
+const received = [], stunPackets = [];
+const hostHtml = `<!doctype html><div id="container"></div><script type="module">
+import { prepareSandboxPackage, createSandboxPackageSession } from '/runtime.js';
+window.scopes = new Map(); window.events = []; window.terminated = [];
+window.launch = async (sources, scope = 'a') => {
+  const files = Object.fromEntries(Object.entries(sources).map(([path, source]) => [path, typeof source === 'string' ? new TextEncoder().encode(source) : new Uint8Array(source)]));
+  const metadata = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([path, bytes]) => [path, { size: bytes.byteLength, sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('') }])));
+  if(window.shareByHash){
+    const byHash=new Map();
+    for(const [path,entry] of Object.entries(metadata)){
+      if(byHash.has(entry.sha256)) files[path]=byHash.get(entry.sha256);else byHash.set(entry.sha256,files[path]);
+    }
+    window.sharedInputs=files;
+  }
+  const prepared = await prepareSandboxPackage({manifest:{formatVersion:1, entrypoint:'index.html', files:metadata}, files});
+  window.logicalBytes=prepared.totalBytes;
+  if (!scopes.has(scope)) scopes.set(scope, new Map());
+  const store = scopes.get(scope); // captured scope, never a mutable current-user lookup
+  const adapter = {
+    async get(key) { return store.get(key) ?? null; },
+    async set(key, value) { store.set(key, value); },
+    async delete(key) { store.delete(key); },
+  };
+  window.session = createSandboxPackageSession({container:document.querySelector('#container'), package:prepared, storage:adapter, onTerminate:reason => terminated.push(reason)});
+  session.connected.then(() => events.push('connected'), () => events.push('connect-error'));
+  session.ready.then(() => events.push('ready'), () => events.push('ready-error'));
+  await session.ready;
+};
+window.hostReady = true;
+</script>`;
+
+test.beforeAll(async () => {
+  udp=dgram.createSocket('udp4');
+  udp.on('message',message=>stunPackets.push(message));
+  await new Promise(resolve=>udp.bind(0,'127.0.0.1',resolve));stunPort=udp.address().port;
+  server = http.createServer(async (request, response) => {
+    const path = new URL(request.url, origin).pathname;
+    if (path === "/host") { response.setHeader("Content-Type", "text/html"); response.end(hostHtml); }
+    else if (path === "/runtime.js") { response.setHeader("Content-Type", "text/javascript"); response.end(await readFile(new URL("../../dist/package.runtime.js", import.meta.url))); }
+    else { received.push(path); response.writeHead(path === "/navigation-observation" ? 200 : 204, {"Content-Type":"text/html"}); response.end(path === "/navigation-observation" ? "<!doctype html><p>navigated</p>" : ""); }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  origin = `http://127.0.0.1:${server.address().port}`;
+});
+test.afterAll(async () => { await new Promise(resolve => server?.close(resolve)); await new Promise(resolve=>udp?.close(resolve)); });
+
+async function open(page, sources, scope = "a") {
+  await page.goto(`${origin}/host`);
+  await page.waitForFunction(() => window.hostReady);
+  await page.evaluate(({ sources, scope }) => window.launch(sources, scope), { sources, scope });
+  return page.frames().find(frame => frame.parentFrame() === page.mainFrame());
+}
+const png = Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvWQAAAAASUVORK5CYII=", "base64"));
+
+const font = Array.from(await readFile(new URL("./fixtures/ABeeZee-Regular.ttf", import.meta.url)));
+const wav = Buffer.alloc(44 + 8000 * 2);
+wav.write("RIFF"); wav.writeUInt32LE(wav.length - 8,4); wav.write("WAVEfmt ",8); wav.writeUInt32LE(16,16);
+wav.writeUInt16LE(1,20); wav.writeUInt16LE(1,22); wav.writeUInt32LE(8000,24); wav.writeUInt32LE(16000,28);
+wav.writeUInt16LE(2,32); wav.writeUInt16LE(16,34); wav.write("data",36); wav.writeUInt32LE(16000,40);
+for(let i=0;i<8000;i++) wav.writeInt16LE(Math.round(Math.sin(i/8000*440*2*Math.PI)*1000),44+i*2);
+const multi = {
+  "index.html": '<!doctype html><html><head><link rel="stylesheet" href="css/main.css?v=1"></head><body><img id="image" src="images/pixel.png?v=1"><audio id="audio" src="audio.wav"></audio><div id="result">pending</div><script src="classic.js?v=1"></script><script type="module" src="js/main.js"></script></body></html>',
+  "classic.js": 'window.order=["classic"]; window.firstGameType=typeof game.storageGet; document.addEventListener("DOMContentLoaded", () => window.domReady=true);',
+  "js/main.js": 'import { value } from "./child.js"; const dynamic = await import("./dynamic.js"); const data = await (await fetch("data.json")).json(); const img = new Image(); img.src = new URL("../images/pixel.png",import.meta.url).href; await img.decode(); await game.storageSet({key:"save",value:"saved"}); window.local = {value,dynamic:dynamic.value,data,save:await game.storageGet({key:"save"}),image:img.naturalWidth}; order.push("module"); document.querySelector("#result").textContent="complete";',
+  "js/child.js": 'export const value=42;',
+  "js/dynamic.js": 'export const value="dynamic";',
+  "css/main.css": '@import "./child.css"; body { background-image:url(../images/pixel.png) } @font-face { font-family:OfflineTest;src:url(../font.ttf) } body { font-family:OfflineTest }',
+  "css/child.css": ':root { --space:7px; } body { margin:var(--space); }',
+  "data.json": '{"local":true}',
+  "images/pixel.png": png,
+  "audio.wav": Array.from(wav),
+  "font.ttf": font,
+};
+
+test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fetch and storage", async ({ page }) => {
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  const frame = await open(page, multi);
+  assert.deepEqual(await page.evaluate(() => events), ["connected", "ready"]);
+  await frame.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
+  const result = await frame.evaluate(async () => {
+    let parentBlocked=false, localStorageBlocked=false;
+    try { void parent.document.body; } catch { parentBlocked=true; }
+    try { localStorage.getItem("x"); } catch { localStorageBlocked=true; }
+    await document.querySelector("#image").decode();
+    await document.fonts.load("16px OfflineTest");
+    return { font:document.fonts.check("16px OfflineTest"), duration:document.querySelector("#audio").duration, referrer:document.referrer,origin:location.origin,parentBlocked,localStorageBlocked,firstGameType,order,domReady,local,
+      margin:getComputedStyle(document.body).margin, image:document.querySelector("#image").naturalWidth,
+      media:document.querySelector("#audio").src.startsWith("blob:null/"),
+      frozen:Object.isFrozen(game), prototype:Object.getPrototypeOf(game)===null,
+    };
+  });
+  assert.deepEqual(result, { font:true,duration:1,referrer:"",origin:"null",parentBlocked:true,localStorageBlocked:true,firstGameType:"function",order:["classic","module"],domReady:true,
+    local:{value:42,dynamic:"dynamic",data:{local:true},save:"saved",image:1},margin:"7px",image:1,media:true,frozen:true,prototype:true });
+  assert.deepEqual(errors, []);
+  const errorsRpc = await frame.evaluate(async () => {
+    const codes=[];
+    for (const payload of [{key:"save",value:2},{key:"save",value:"x",namespace:"other"},{key:"x",value:"x".repeat(16385)}]) {
+      try { await game.storageSet(payload); } catch (error) {codes.push(error.code);}
+    }
+    await game.storageDelete({key:"save"});
+    return {codes,value:await game.storageGet({key:"save"})};
+  });
+  assert.deepEqual(errorsRpc,{codes:["INVALID_PAYLOAD","INVALID_PAYLOAD","INVALID_PAYLOAD"],value:null});
+});
+
+test("fragment anchors stay inside srcdoc rather than requesting the parent's fallback URL", async ({ page }) => {
+  const frame=await open(page,{"index.html":'<a id="link" href="#target">jump</a><div id="target">target</div>'});
+  await frame.locator('#link').click();
+  assert.equal(await frame.evaluate(()=>location.hash),'#target');
+  assert.equal(await page.locator('iframe').count(),1);
+  assert.deepEqual(await page.evaluate(()=>terminated),[]);
+});
+
+test("ESM cycles and inline modules evaluate before ready", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": '<script type="module">import { read } from "./a.js";window.cycleResult=read();</script>',
+    "a.js": 'import { b } from "./b.js";export const a=1;export function read(){return b()}',
+    "b.js": 'import { a } from "./a.js";export function b(){return a+1}',
+  });
+  assert.equal(await frame.evaluate(() => cycleResult),2);
+});
+
+test("package bootstrap rejects wrong null-Origin peer/token/origin and accepts one authenticated port only", async ({ page }) => {
+  await page.goto(`${origin}/host`); await page.waitForFunction(()=>window.hostReady);
+  await page.evaluate(() => {
+    const Original=window.MessageChannel;
+    window.channelCount=0;
+    window.MessageChannel=class extends Original { constructor(){ super();window.channelCount++; } };
+    window.blockBootstrap=event=>{
+      if(event.isTrusted && event.data?.type==='sandbox:package-bootstrap'){
+        window.hello=event.data;event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener('message',blockBootstrap,true);
+    void launch({'index.html':'<p>authenticated</p>'}).catch(()=>{});
+  });
+  await page.waitForFunction(()=>window.hello);
+  const denied = await page.evaluate(async () => {
+    const frame=session.iframe;
+    for(const data of [
+      {origin:'https://wrong.invalid',source:frame.contentWindow,data:hello},
+      {origin:'null',source:window,data:hello},
+      {origin:'null',source:frame.contentWindow,data:{...hello,token:'0'.repeat(64)}},
+    ]) window.dispatchEvent(new MessageEvent('message',data));
+    await new Promise(r=>setTimeout(r,50));
+    return {channels:channelCount,events:[...events]};
+  });
+  assert.deepEqual(denied,{channels:0,events:[]});
+  // Also exercise the child's trusted-parent/token check. A wrong init from
+  // the actual parent must not steal its one bootstrap port.
+  const rejectedChildInit = await page.evaluate(async () => {
+    const attack=new MessageChannel(),extra=new MessageChannel();let replied=false;attack.port1.onmessage=()=>{replied=true;};
+    session.iframe.contentWindow.postMessage({type:'sandbox:package-init',version:1,token:hello.token},'*',[attack.port2,extra.port2]);
+    const wrongToken=new MessageChannel();wrongToken.port1.onmessage=()=>{replied=true;};
+    session.iframe.contentWindow.postMessage({type:'sandbox:package-init',version:1,token:'0'.repeat(64)},'*',[wrongToken.port2]);
+    await new Promise(r=>setTimeout(r,50));attack.port1.close();extra.port1.close();wrongToken.port1.close();return replied;
+  });
+  assert.equal(rejectedChildInit,false);
+  const wrongParentAccepted=await page.evaluate(async()=>{
+    let accepted=false;
+    const listen=event=>{if(event.data?.type==='wrong-parent-port-replied')accepted=true;};
+    window.addEventListener('message',listen);
+    const sibling=document.createElement('iframe');
+    sibling.srcdoc='<script>const c=new MessageChannel();c.port1.onmessage=()=>parent.postMessage({type:"wrong-parent-port-replied"},"*");parent.frames[0].postMessage('+JSON.stringify({type:'sandbox:package-init',version:1,token:hello.token})+',"*",[c.port2]);<'+ '/script>';
+    document.body.append(sibling);await new Promise(r=>setTimeout(r,100));sibling.remove();
+    window.removeEventListener('message',listen);return accepted;
+  });
+  assert.equal(wrongParentAccepted,false);
+  await page.evaluate(async () => {
+    window.removeEventListener('message',blockBootstrap,true);
+    window.dispatchEvent(new MessageEvent('message',{origin:'null',source:session.iframe.contentWindow,data:hello}));
+    await session.ready;
+    window.beforeReplay=channelCount;
+    window.dispatchEvent(new MessageEvent('message',{origin:'null',source:session.iframe.contentWindow,data:hello}));
+  });
+  assert.equal(await page.evaluate(()=>channelCount===beforeReplay),true);
+  assert.deepEqual(await page.evaluate(()=>events),['connected','ready']);
+});
+
+test("termination during module initialization rejects ready and cleans the live session", async ({ page }) => {
+  await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
+  await page.evaluate(()=>{window.startResult=launch({'index.html':'<script type="module">await new Promise(r=>window.unblock=r);</script>'}).then(()=>"ready",()=>"rejected");});
+  await expect.poll(()=>page.evaluate(()=>events[0])).toBe('connected');
+  await page.evaluate(()=>session.terminate('cancel initialization'));
+  assert.equal(await page.evaluate(()=>startResult),'rejected');
+  await expect(page.locator('iframe')).toHaveCount(0);
+  assert.deepEqual(await page.evaluate(()=>terminated),['cancel initialization']);
+});
+
+test("package transport exceeds 64KiB without changing RPC payload limits", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": '<script>fetch("large.txt").then(r=>r.text()).then(t=>window.lengthResult=t.length)</script>',
+    "large.txt": "x".repeat(700000),
+  });
+  await expect.poll(() => frame.evaluate(() => window.lengthResult)).toBe(700000);
+  assert.equal(await frame.evaluate(async () => { try {await game.storageSet({key:"x",value:"x".repeat(70000)});}catch(e){return e.code;} }), "INVALID_PAYLOAD");
+});
+
+test("same-SHA paths share downloader buffers but transport never detaches/retransfers them", async ({ page }) => {
+  await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
+  await page.evaluate(async () => {
+    window.shareByHash=true;
+    await launch({"index.html":'<script type="module">window.lengths=await Promise.all(["a.txt","b.txt"].map(async p=>(await(await fetch(p)).text()).length));</script>',"a.txt":"s".repeat(700000),"b.txt":"s".repeat(700000)});
+  });
+  const frame=page.frames().find(f=>f.parentFrame()===page.mainFrame());
+  assert.deepEqual(await frame.evaluate(()=>lengths),[700000,700000]);
+  assert.equal(await page.evaluate(()=>sharedInputs['a.txt']===sharedInputs['b.txt']),true);
+  assert.equal(await page.evaluate(()=>sharedInputs['a.txt'].byteLength),700000);
+  assert.equal(await page.evaluate(()=>logicalBytes>1400000),true);
+});
+
+test("connected precedes actual module completion and ready is never iframe load", async ({ page }) => {
+  await page.goto(`${origin}/host`); await page.waitForFunction(() => window.hostReady);
+  await page.evaluate(() => { void window.launch({"index.html":'<script type="module">await new Promise(r=>window.releaseExecution=r);window.executed=true;</script>'}); });
+  await expect.poll(() => page.evaluate(() => events[0])).toBe("connected");
+  const frame = page.frames().find(frame => frame.parentFrame() === page.mainFrame());
+  await frame.waitForFunction(() => typeof window.releaseExecution === "function");
+  assert.equal(await page.evaluate(() => events.includes("ready")), false);
+  await frame.evaluate(() => releaseExecution());
+  await expect.poll(() => page.evaluate(() => events.includes("ready"))).toBe(true);
+  assert.equal(await frame.evaluate(() => executed), true);
+});
+
+test("storage is scoped by host closure, not user input; old session is destroyed", async ({ page }) => {
+  const frame = await open(page, {"index.html":"<p>storage</p>"}, "first");
+  await frame.evaluate(() => game.storageSet({key:"save",value:"first"}));
+  await page.evaluate(() => session.terminate("switch"));
+  await page.evaluate(() => window.launch({"index.html":"<p>second</p>"},"second"));
+  const second = page.frames().find(f => f.parentFrame() === page.mainFrame());
+  assert.equal(await second.evaluate(() => game.storageGet({key:"save"})), null);
+  assert.deepEqual(await page.evaluate(() => [...scopes.get("first")]), [["save","first"]]);
+  assert.equal(await page.locator("iframe").count(), 1);
+  assert.deepEqual(await page.evaluate(() => terminated), ["switch"]);
+});
+
+test("dynamic external fetch, sockets, images, beacon and workers hit no real HTTP receiver", async ({ page }) => {
+  const frame = await open(page, {"index.html":"<p>offline</p>"});
+  const prefix = `/probe-${Date.now()}`;
+  const result = await frame.evaluate(async ({ target }) => {
+    const failures=[];
+    try { await fetch(target+"/fetch"); } catch { failures.push("fetch"); }
+    await new Promise(resolve => { const img=new Image();img.onload=resolve;img.onerror=()=>{failures.push("image");resolve();};img.src=target+"/image"; });
+    const beacon=navigator.sendBeacon(target+"/beacon","x");
+    await new Promise(resolve => {
+      try {
+        const worker=new Worker(URL.createObjectURL(new Blob(["postMessage('unsafe')"],{type:"text/javascript"})));
+        worker.onerror=()=>{failures.push("worker");resolve();};
+        worker.onmessage=()=>resolve();
+      } catch { failures.push("worker"); resolve(); }
+    });
+    await new Promise(resolve => { const ws=new WebSocket(target.replace("http:","ws:")+"/socket");ws.onerror=()=>{failures.push("socket");resolve();};setTimeout(resolve,200); });
+    return {failures,beacon};
+  }, { target:origin+prefix });
+  assert.deepEqual(new Set(result.failures), new Set(["fetch","image","worker","socket"]));
+  // sendBeacon's boolean reports queuing, not CSP/network delivery.
+  assert.equal(typeof result.beacon,"boolean");
+  await page.waitForTimeout(100);
+  assert.deepEqual(received.filter(path=>path.startsWith(prefix)),[]);
+});
+
+test("characterizes the explicitly unguaranteed WebRTC/STUN UDP boundary", async ({ page }) => {
+  const frame=await open(page,{"index.html":"<p>WebRTC boundary</p>"});
+  const before=stunPackets.length;
+  const available=await frame.evaluate(async port=>{
+    if(typeof RTCPeerConnection!=="function")return false;
+    const peer=new RTCPeerConnection({iceServers:[{urls:`stun:127.0.0.1:${port}`}]});
+    peer.createDataChannel('boundary');await peer.setLocalDescription(await peer.createOffer());
+    await new Promise(resolve=>setTimeout(resolve,350));peer.close();return true;
+  },stunPort);
+  const observed=stunPackets.length-before;
+  console.log(`Offline profile WebRTC available=${available}; real local STUN UDP datagrams observed=${observed} (not a zero-network guarantee)`);
+  // Characterization, not a fake denial assertion: browsers may strengthen
+  // their policy in the future. No network interception or API deletion.
+  assert.equal(typeof available,'boolean');
+});
+
+test("self-navigation terminates reactively (not claimed to prevent initial request)", async ({ page }) => {
+  const frame = await open(page,{"index.html":"<p>navigate</p>"});
+  await frame.evaluate(url => { location.href=url; },origin+"/navigation-observation").catch(()=>{});
+  await expect.poll(()=>page.evaluate(()=>terminated.length)).toBe(1);
+  await expect(page.locator("iframe")).toHaveCount(0);
+});
+
+test("loader failure rejects ready and removes the iframe, rather than fake-ready", async ({ page }) => {
+  await page.goto(`${origin}/host`); await page.waitForFunction(()=>window.hostReady);
+  const error = await page.evaluate(async () => {
+    try { await launch({"index.html":'<script type="module">throw new Error("user init failed")</script>'}); return "ready"; }
+    catch(error){return error.message;}
+  });
+  // Module execution exceptions fire window.error rather than script.error;
+  // the runtime must detect them before claiming ready.
+  assert.notEqual(error,"ready");
+  await expect(page.locator("iframe")).toHaveCount(0);
+});

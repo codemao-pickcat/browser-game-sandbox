@@ -64,7 +64,10 @@ async function serveHostModule(pathname, response) {
   const match = /^\/(dist|zod)\/([A-Za-z0-9_./-]+)$/.exec(pathname);
   if (!match || match[2].split("/").includes("..")) return false;
   try {
-    const body = await readFile(resolve(root, match[1] === "dist" ? "dist" : "node_modules/zod", match[2]));
+    // Use the actual self-contained host browser artifact; the package root
+    // also has parser dependencies intended for a bundler, not bare HTTP ESM.
+    const name = match[1] === "dist" && match[2] === "index.js" ? "package.runtime.js" : match[2];
+    const body = await readFile(resolve(root, match[1] === "dist" ? "dist" : "node_modules/zod", name));
     response.writeHead(200, { "Content-Type": "text/javascript" });
     response.end(body);
   } catch { response.writeHead(404); response.end(); }
