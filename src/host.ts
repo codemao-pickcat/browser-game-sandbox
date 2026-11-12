@@ -69,7 +69,10 @@ export interface SandboxHostOptions {
 
 export type SandboxHostState = "idle" | "handshaking" | "connected" | "terminated";
 
-export class SandboxHostSession {
+// Internal engine shared by the legacy Origin handshake and the package token
+// handshake. Only the former is exported from the public entry.
+export type SandboxHostRpcOptions = Omit<SandboxHostOptions, "window" | "iframe" | "gameOrigin" | "hostOrigin" | "channelFactory">;
+export class SandboxHostRpcSession {
   public readonly connected: Promise<void>;
   public state: SandboxHostState = "idle";
 
@@ -81,10 +84,6 @@ export class SandboxHostSession {
   private readonly maxConcurrentRequests: number;
   private readonly maxRequestIds: number;
   private readonly requestIdTtlMs: number;
-  private readonly channelFactory: MessageChannelFactory;
-  private readonly onMessage = (event: HostMessageEventLike) =>
-    this.handleWindowMessage(event);
-  private readonly onIframeLoad = () => this.handleIframeLoad();
   private readonly requestControllers = new Map<string, AbortController>();
   private readonly activeMethodRequests = new Map<string, number>();
   private readonly seenRequestIds = new Map<string, number>();
@@ -96,17 +95,8 @@ export class SandboxHostSession {
   private readonly rejectConnected: (reason: unknown) => void;
   private port: MessagePortLike | undefined;
   private connectedSettled = false;
-  private iframeLoadObserved = false;
 
-  public constructor(private readonly options: SandboxHostOptions) {
-    assertValidOrigin(options.gameOrigin);
-    const hostOrigin = options.hostOrigin ?? options.window.location?.origin;
-    if (hostOrigin !== undefined) {
-      assertValidOrigin(hostOrigin);
-      if (hostOrigin === options.gameOrigin) {
-        throw new TypeError("gameOrigin must be cross-origin from the host");
-      }
-    }
+  public constructor(private readonly options: SandboxHostRpcOptions) {
     this.capabilities = [...(options.capabilities ?? [])];
     this.browserCapabilities = [...(options.browserCapabilities ?? [])];
     assertBrowserCapabilities(this.browserCapabilities);
@@ -137,7 +127,6 @@ export class SandboxHostSession {
     if (!Number.isFinite(this.handshakeTimeoutMs) || this.handshakeTimeoutMs <= 0) {
       throw new TypeError("handshakeTimeoutMs must be positive");
     }
-    this.channelFactory = options.channelFactory ?? browserMessageChannelFactory;
     if (!bridgeInitSchema.safeParse({
       type: "sandbox:init",
       version: PROTOCOL_VERSION,
@@ -201,8 +190,6 @@ export class SandboxHostSession {
       throw new SandboxBridgeError("INVALID_MESSAGE", "Host session has already started");
     }
     this.state = "handshaking";
-    this.options.window.addEventListener("message", this.onMessage);
-    this.options.iframe.addEventListener?.("load", this.onIframeLoad);
     this.handshakeTimer = setTimeout(
       () => this.terminate("Sandbox handshake timed out"),
       this.handshakeTimeoutMs,
@@ -229,8 +216,6 @@ export class SandboxHostSession {
     this.state = "terminated";
     if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
     this.handshakeTimer = undefined;
-    this.options.window.removeEventListener("message", this.onMessage);
-    this.options.iframe.removeEventListener?.("load", this.onIframeLoad);
 
     for (const controller of this.requestControllers.values()) controller.abort();
     this.requestControllers.clear();
@@ -252,12 +237,6 @@ export class SandboxHostSession {
       this.port = undefined;
     }
 
-    try {
-      this.options.iframe.remove?.();
-    } catch {
-      // Removing the iframe is best-effort; bridge cleanup still completes.
-    }
-
     if (!this.connectedSettled) {
       this.connectedSettled = true;
       this.rejectConnected(new BridgeClosedError(reason));
@@ -265,50 +244,17 @@ export class SandboxHostSession {
     this.options.onTerminate?.(reason);
   }
 
-  private handleWindowMessage(event: HostMessageEventLike): void {
-    if (this.state !== "handshaking") return;
-    if (event.origin !== this.options.gameOrigin) return;
-    const source = event.source;
-    if (!source || source !== this.options.iframe.contentWindow) return;
-    if (!isBridgeReadyMessage(event.data)) return;
-    if (this.port) return;
-
-    let channel;
-    try {
-      channel = this.channelFactory();
-    } catch {
-      this.terminate("Unable to create MessageChannel");
-      return;
-    }
-    this.port = channel.port1;
-    this.port.onmessage = (messageEvent) =>
-      this.handlePortMessage(messageEvent.data);
-    this.port.onmessageerror = () => this.terminate("MessagePort reported an error");
-    this.port.start?.();
-    this.state = "handshaking";
-
-    const initMessage = {
-      type: "sandbox:init" as const,
-      version: PROTOCOL_VERSION,
-      capabilities: this.capabilities,
-      maxPayloadBytes: this.maxPayloadBytes,
-    };
-
-    source.postMessage(
-      initMessage,
-      this.options.gameOrigin,
-      [channel.port2 as unknown as Transferable],
-    );
+  /** Internal: caller must authenticate the exact peer before attaching once. */
+  public attachAuthenticatedPort(port: MessagePortLike): void {
+    if (this.state !== "handshaking" || this.port) throw new TypeError("RPC port already attached or closed");
+    this.port = port;
+    port.onmessage = event => this.handlePortMessage(event.data);
+    port.onmessageerror = () => this.terminate("MessagePort reported an error");
+    port.start?.();
   }
 
-  private handleIframeLoad(): void {
-    if (!this.iframeLoadObserved) {
-      this.iframeLoadObserved = true;
-      return;
-    }
-    if (this.state !== "terminated") {
-      this.terminate("Sandbox iframe navigated after its initial document");
-    }
+  public get initMessage() {
+    return { type: "sandbox:init" as const, version: PROTOCOL_VERSION, capabilities: this.capabilities, maxPayloadBytes: this.maxPayloadBytes };
   }
 
   private handlePortMessage(message: unknown): void {
@@ -396,22 +342,8 @@ export class SandboxHostSession {
     }
     this.seenRequestIds.set(message.id, now);
 
-    let handlerPayload = message.payload;
-    try {
-      if (method.parse) {
-        handlerPayload = await method.parse(message.payload);
-      } else {
-        const validation = method.validate?.(message.payload);
-        if (validation && typeof (validation as PromiseLike<void>).then === "function") {
-          await validation;
-        }
-      }
-    } catch {
-      this.seenRequestIds.delete(message.id);
-      this.sendError(message.id, "INVALID_PAYLOAD", "Invalid payload");
-      return;
-    }
-
+    // Reserve admission before async schemas too: cancellation/termination
+    // during parsing must not start a late host closure or bypass concurrency.
     const controller = new AbortController();
     this.requestControllers.set(message.id, controller);
     this.activeMethodRequests.set(message.method, activeForMethod + 1);
@@ -419,6 +351,20 @@ export class SandboxHostSession {
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
+      let handlerPayload = message.payload;
+      try {
+        if (method.parse) {
+          handlerPayload = await method.parse(message.payload);
+        } else {
+          const validation = method.validate?.(message.payload);
+          if (validation && typeof (validation as PromiseLike<void>).then === "function") await validation;
+        }
+      } catch {
+        this.seenRequestIds.delete(message.id);
+        this.sendError(message.id, "INVALID_PAYLOAD", "Invalid payload");
+        return;
+      }
+      if (controller.signal.aborted || this.state !== "connected" || !this.port) return;
       const handlerPromise = method.handler(handlerPayload, {
         signal: controller.signal,
         capabilities: this.capabilities,
@@ -441,6 +387,7 @@ export class SandboxHostSession {
         this.sendError(message.id, "INVALID_PAYLOAD", "Response exceeds the configured limit");
         return;
       }
+      if (controller.signal.aborted || this.state !== "connected") return;
       this.sendResponse({
         type: "response",
         version: PROTOCOL_VERSION,
@@ -521,6 +468,54 @@ export class SandboxHostSession {
     if (this.state !== "connected" || !this.port) {
       throw new BridgeClosedError("Sandbox is not connected");
     }
+  }
+}
+
+export class SandboxHostSession extends SandboxHostRpcSession {
+  private readonly onMessage = (event: HostMessageEventLike) => this.handleWindowMessage(event);
+  private readonly onIframeLoad = () => this.handleIframeLoad();
+  private iframeLoadObserved = false;
+  private portSent = false;
+
+  public constructor(private readonly hostOptions: SandboxHostOptions) {
+    assertValidOrigin(hostOptions.gameOrigin);
+    const hostOrigin = hostOptions.hostOrigin ?? hostOptions.window.location?.origin;
+    if (hostOrigin !== undefined) {
+      assertValidOrigin(hostOrigin);
+      if (hostOrigin === hostOptions.gameOrigin) throw new TypeError("gameOrigin must be cross-origin from the host");
+    }
+    super(hostOptions);
+  }
+
+  public override start(): void {
+    super.start();
+    this.hostOptions.window.addEventListener("message", this.onMessage);
+    this.hostOptions.iframe.addEventListener?.("load", this.onIframeLoad);
+  }
+
+  public override terminate(reason = "Sandbox terminated"): void {
+    if (this.state === "terminated") return;
+    this.hostOptions.window.removeEventListener("message", this.onMessage);
+    this.hostOptions.iframe.removeEventListener?.("load", this.onIframeLoad);
+    try { this.hostOptions.iframe.remove?.(); } catch { /* Cleanup still completes. */ }
+    super.terminate(reason);
+  }
+
+  private handleWindowMessage(event: HostMessageEventLike): void {
+    if (this.state !== "handshaking" || this.portSent || event.origin !== this.hostOptions.gameOrigin ||
+        !event.source || event.source !== this.hostOptions.iframe.contentWindow || !isBridgeReadyMessage(event.data)) return;
+    let channel;
+    try { channel = (this.hostOptions.channelFactory ?? browserMessageChannelFactory)(); }
+    catch { this.terminate("Unable to create MessageChannel"); return; }
+    this.portSent = true;
+    this.attachAuthenticatedPort(channel.port1);
+    try { event.source.postMessage(this.initMessage, this.hostOptions.gameOrigin, [channel.port2 as unknown as Transferable]); }
+    catch { channel.port2.close(); this.terminate("Unable to transfer MessagePort"); }
+  }
+
+  private handleIframeLoad(): void {
+    if (!this.iframeLoadObserved) { this.iframeLoadObserved = true; return; }
+    this.terminate("Sandbox iframe navigated after its initial document");
   }
 }
 

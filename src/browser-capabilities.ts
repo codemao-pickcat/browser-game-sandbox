@@ -245,6 +245,30 @@ export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy
   };
 }
 
+/** Best-effort native-browser offline profile; NOT an absolute network boundary. */
+export function buildOfflineBrowserPolicy(): BrowserPolicy {
+  const enforcement = Object.fromEntries(Object.values(BROWSER_CAPABILITIES).map(capability => [capability, "not-granted"])) as Record<BrowserCapability, BrowserCapabilityEnforcement>;
+  enforcement[BROWSER_CAPABILITIES.networkConnect] = "not-enforceable";
+  enforcement[BROWSER_CAPABILITIES.websocket] = "not-enforceable";
+  enforcement[BROWSER_CAPABILITIES.webRtc] = "not-enforceable";
+  return {
+    grantedCapabilities: [], sandboxTokens: ["allow-scripts"], iframeAllow: [],
+    contentSecurityPolicy: [
+      "default-src 'none'", "script-src 'unsafe-inline' blob:", "style-src 'unsafe-inline' blob:",
+      "img-src blob:", "font-src blob:", "media-src blob:", "connect-src 'none'",
+      "worker-src 'none'", "child-src 'none'", "frame-src 'none'", "object-src 'none'",
+      "base-uri 'none'", "form-action 'none'", "navigate-to 'none'",
+    ].join("; "),
+    permissionsPolicy: permissionPolicyFeatures.map(([feature]) => `${feature}=()`).join(", "),
+    enforcement,
+    warnings: [
+      "Best-effort offline execution, not zero-network isolation. WebRTC/STUN and self-navigation are not reliably blocked in native browsers.",
+      "CSP blocks common fetch/WebSocket/resource/Worker exits; navigation termination is reactive and cannot prevent the first request.",
+      "navigate-to is not supported by all browsers. No arbitrary-URL host network proxy is provided.",
+    ],
+  };
+}
+
 function buildWorkerSources(
   granted: ReadonlySet<BrowserCapability>,
   warnings: string[],

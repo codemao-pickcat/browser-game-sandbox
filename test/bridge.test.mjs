@@ -979,6 +979,42 @@ test("caps concurrent requests even when handlers never resolve", async () => {
   host.terminate();
 });
 
+test("cancellation/termination during async parsing never invokes a late host closure", async () => {
+  for (const mode of ["cancel", "terminate"]) {
+    let release, started, calls=0;
+    const parsing=new Promise(resolve=>{started=resolve;});
+    const {client,host}=await connect({ methods:{"test.parse":{
+      parse:()=>{started();return new Promise(resolve=>{release=resolve;});},
+      handler:()=>{calls++;return true;},
+    }} });
+    const controller=new AbortController();
+    const pending=client.call("test.parse",{}, {signal:controller.signal});
+    const rejected=assert.rejects(pending,error=>error.code===(mode==="cancel"?"CANCELLED":"BRIDGE_CLOSED"));
+    await parsing;
+    if(mode==="cancel") controller.abort();else host.terminate();
+    await rejected;
+    release({});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls,0);
+    host.terminate();client.close();
+  }
+});
+
+test("async parsing counts against method concurrency before handler admission", async () => {
+  let release, started;
+  const parsing=new Promise(resolve=>{started=resolve;});
+  const {client,host}=await connect({methods:{"test.parse":{
+    maxConcurrent:1,
+    parse:()=>{started();return new Promise(resolve=>{release=resolve;});},
+    handler:()=>true,
+  }}});
+  const first=client.call("test.parse",{});
+  await parsing;
+  await assert.rejects(client.call("test.parse",{}),error=>error.code==="RATE_LIMITED");
+  release({});assert.equal(await first,true);
+  host.terminate();client.close();
+});
+
 test("awaits async validators before invoking handlers", async () => {
   let calls = 0;
   const { client, host } = await connect({

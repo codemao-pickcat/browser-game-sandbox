@@ -22,18 +22,39 @@ The browser suite requires Chromium once:
 npx playwright install chromium
 ```
 
-## Runtime shape
+## Offline package entry (0.3.0)
+
+```ts
+import { prepareSandboxPackage, createSandboxPackageSession } from "@codemao-pickcat/browser-game-sandbox";
+
+// Same pure parser/integrity check in Node.js and in the browser; no user-code
+// execution, DOM dependency or network access during preparation.
+const prepared = await prepareSandboxPackage({ manifest, files });
+const session = createSandboxPackageSession({ container, package: prepared, storage, onTerminate });
+await session.connected; // authenticated bootstrap/RPC, not content readiness
+await session.ready;     // package loaded and initial scripts/modules evaluated
+// session.terminate();
+```
+
+The execution entry is always root `index.html`; secondary HTML templates remain verified passive bytes for package-relative `fetch(...).text()`, never additional document/Blob/navigation entries. Multi-file HTML/CSS/JS, static/literal-dynamic ESM imports, images/fonts/media and package-relative GET/HEAD fetch are supported within a documented compatibility matrix—not arbitrary ZIP transparency. A trusted embedded bootstrap authenticates an opaque iframe with the exact source, null Origin, one-time random token and one initial port. Package bytes have separate budgets/chunked transport; ordinary RPC stays at 64 KiB. Blobs are created inside the opaque child, not the parent.
+
+Optional string-only `window.game.storageGet/Set/Delete` use the existing host-plugin/RPC validation and a scope-bound host adapter. Limits match MOSS: 2000 files, 512 UTF-8 path bytes, 25 MiB/file and 50 MiB/package. `SANDBOX_RUNTIME_VERSION` equals the package version. The standalone `package.runtime.js` export is a self-contained trusted ESM browser bundle; `npm run prepare` builds dist without Git metadata, including for pinned-commit Git dependencies.
+
+**Native-browser offline restrictions are best-effort, not zero-network isolation.** CSP blocks tested common fetch/WebSocket/resource/Worker exits; WebRTC/STUN and self-navigation are not strongly guaranteed. There is no arbitrary-URL network proxy. See the [complete API, support matrix, limits and threat model](./docs/offline-package.zh-CN.md).
+
+## Existing cross-origin runtime
 
 The trusted host creates an iframe with a stable, cross-origin game origin and starts a `SandboxHostSession`. Each untrusted game should use its own origin when storage or same-origin resource isolation matters. The platform preloads `dist/game.preload.js` before all game-controlled markup, exposing explicitly configured `window.game.xxx(payload, { signal, timeoutMs })` methods. Content installs no sandbox package and performs no handshake. The internal MessageChannel client retains exact host-origin checks; the host validates source, origin, strict Zod schemas, capabilities, payload size, rate limits, and lifecycle.
 
 ## CI and publishing
 
 - Pushes and pull requests run Node checks, an SDK-free Vue 3 consumer build, and Chromium sandbox tests. CI and publishing use `ubuntu-24.04` with explicit permissions and timeouts rather than a moving `ubuntu-latest` image. Browser checks and publishing run inside the official `mcr.microsoft.com/playwright:v1.64.1-noble` container with preinstalled browsers and system dependencies, avoiding runtime apt installation. The image version must match the locked Playwright version; an actual Chromium launch verifies the environment before tests. Environment or test failures still block publishing.
-- Tags matching `v*.*.*` run the full suite. The publisher accepts only successful same-repository push CI and verifies that the real version tag points to that CI commit before running package scripts. It synchronizes `package.json` to the tag version, verifies packed exports and the single `dist/game.preload.js` browser bundle, rejects retired SDK exports/artifacts, builds an npm tarball, uploads it as an artifact, and publishes to the GitHub Packages npm registry.
-- The public package surface is the ESM root host API plus `game.preload.js`, a platform-served asset, not a content SDK. There is no Vue peer dependency.
+- Tags matching `v*.*.*` run the full suite. The publisher accepts only successful same-repository push CI and verifies that the real version tag points to that CI commit before running package scripts. It synchronizes `package.json` to the tag version, verifies packed exports, runtime/package version consistency and the trusted browser bundles, rejects retired SDK exports/artifacts, builds an npm tarball, uploads it as an artifact, and publishes to the GitHub Packages npm registry.
+- The public package surface is the ESM root host API plus trusted `game.preload.js` and `package.runtime.js` platform assets, not a content SDK. There is no Vue peer dependency.
 
 ## Documentation
 
+- [Offline package runtime: API, support matrix and boundaries](./docs/offline-package.zh-CN.md)
 - [English usage guide](./docs/usage.en.md)
 - [简体中文使用手册](./docs/usage.zh-CN.md)
 - The trusted game-resource server must insert the synchronous classic tag generated by `renderSandboxGamePreloadScript` into a controlled `<head>` before all game-controlled markup, and serve `dist/game.preload.js` from an exact reserved same-origin route on the resource allowlist. See the usage guides for complete platform integration and SDK-free HTML/Vue examples.
