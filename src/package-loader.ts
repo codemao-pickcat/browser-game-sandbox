@@ -1,6 +1,6 @@
 import { SandboxBridgeClient } from "./client.js";
 import type { SandboxGameApiBindings } from "./game-api-config.js";
-import { moduleSpecifier, resolvePackageReference, type PackageSnapshot, type ResourcePart } from "./package-format.js";
+import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSnapshot, type ResourcePart } from "./package-format.js";
 
 /** Runs only in the opaque child, after every byte has been received/verified. */
 export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings): Promise<() => void> {
@@ -29,7 +29,13 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
   document.addEventListener("click", onLinkClick, true);
   const cleanup = () => { document.removeEventListener("click", onLinkClick, true); stopObserving(); client.close(); for (const url of urls.values()) revokeObjectURL(url); for (const url of inlineModuleUrls) revokeObjectURL(url); urls.clear(); inlineModuleUrls.length = 0; };
   window.addEventListener("pagehide", cleanup, { once: true });
-  const render = (parts: readonly ResourcePart[]): string => parts.map(part => typeof part === "string" ? part : assetUrl(part.asset) + part.suffix).join("");
+  const render = (parts: readonly ResourcePart[]): string => parts.map(part => {
+    if (typeof part === "string") return part;
+    // Blob registry lookup has no query variants. Strip only the virtual
+    // search, preserving the entire fragment (including any '?' inside it).
+    const hash = part.suffix.indexOf("#");
+    return assetUrl(part.asset) + (hash < 0 ? "" : part.suffix.slice(hash));
+  }).join("");
   const assetUrl = (path: string): string => {
     const known = urls.get(path);
     if (known) return known;
@@ -41,7 +47,8 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     return url;
   };
   try {
-    // Eagerly materialize ALL resources before exposing/running any user script.
+    // Materialize all compiled assets before user scripts. HTML templates stay
+    // byte-only fetch data and never acquire a document/asset Blob URL.
     for (const path of byPath.keys()) assetUrl(path);
     const api: Record<string, (payload: unknown, options?: Parameters<SandboxBridgeClient["call"]>[2]) => Promise<unknown>> = Object.create(null);
     for (const [name, binding] of Object.entries(methods)) {
@@ -63,7 +70,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
       if (!bytes) throw new TypeError(`Missing offline fetch resource: ${reference}`);
       signal?.throwIfAborted();
       return new Response(method === "HEAD" ? null : new Uint8Array(bytes), {
-        status: 200, headers: { "Content-Type": byPath.get(path)?.mime ?? "text/html", "Content-Length": String(bytes.byteLength) },
+        status: 200, headers: { "Content-Type": resourceMime(path), "Content-Length": String(bytes.byteLength) },
       });
     };
     Object.defineProperty(window, "fetch", { value: localFetch, configurable: false, writable: false });

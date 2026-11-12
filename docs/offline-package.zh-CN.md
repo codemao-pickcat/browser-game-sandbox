@@ -48,30 +48,34 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 - 包独立通道、256 KiB 传输分块、逐块确认；会话装载总超时 30s。初始 RPC 握手保持原有 5s 超时。
 - 原有通用 RPC **仍为 64 KiB**，没有为传包调大；30 请求/秒、并发/请求 ID/取消/超时/销毁检查照常生效。
 - 路径为规范的包相对路径，禁止空段、`.`/`..`、前导 `/`、反斜线、控制字符、空白、`% : ? #`。引用允许 `./`、`../`（不得越过包根）及 `/` 包根相对写法；引用中的正常 URL 编码会解码为确切包路径。
+- 普通静态资源引用允许 query（如 `img.png?v=1`）：查找只使用包路径，物化 Blob 时丢弃 query、保留完整 fragment（包括 fragment 内的 `?`）。不同 query 不代表不同网络资源或缓存版本，字节版本只由 manifest/SHA 决定；ES module 引用仍明确拒绝 query/hash。
 - HTML/CSS/JS/SVG 必须为 UTF-8。二进制文件保证字节完整性及扩展名支持，不承诺解码器能播放任意损坏或浏览器不支持的媒体编码。
 
-允许的扩展名：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。只有根 `index.html` 可为 HTML 文档；其他 HTML、WASM、压缩包及未知扩展名拒绝。ZIP 解包由平台负责，本 API 不解析 ZIP。
+允许的扩展名：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。只有根 `index.html` 可作为执行入口。其他 `.html`（如 `assets/template.html`）允许作为被动模板数据，仍校验 SHA-256、大小与 UTF-8；仅保留原始字节供包内相对 fetch 读取，不解析/改写模板、不生成 HTML Blob、不插入 DOM，也不提供次级文档或导航入口。WASM、压缩包及未知扩展名拒绝。ZIP 解包由平台负责，本 API 不解析 ZIP。
 
 ## 支持矩阵
 
 | 模式 | 行为 |
 | --- | --- |
-| 根 HTML、普通布局与表单控件 | 支持；不能提交表单 |
+| 根 HTML、普通布局与表单控件 | 仅根 `index.html` 编译为执行文档；支持布局与控件，不能提交表单 |
+| 次级 HTML 模板（含嵌套路径） | 支持 `fetch("assets/template.html").text()`，GET/HEAD 返回原始字节及 `text/html` 类型；模板内容不作执行资源解析，其 script/meta/URL 只是数据，SDK 不激活它们 |
 | 静态 `script src`、inline script | 支持；在完整 DOM 装载后按文档顺序执行；`async/defer` 归一为顺序执行 |
 | `type="module"`（外部/内联） | 支持，含静态 import/export、循环引用、top-level await |
 | `import("./literal.js")` | 支持；非 literal 动态 import、bare specifier、import attributes/JSON modules、module query/hash 变体明确拒绝 |
-| `new URL("./asset", import.meta.url)` | 支持 literal 资源，重写为子文档创建的 Blob URL；动态参数明确拒绝 |
+| `new URL("./asset", import.meta.url)` | 支持非 HTML literal 资源，重写为子文档创建的 Blob URL；动态参数与 HTML Blob 资源明确拒绝，HTML 模板请使用包内相对 fetch |
 | stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL；CSS Blob 依赖环拒绝 |
 | 图片、字体、音频、视频的静态资源引用 | 支持包内文件；HTML `srcset/imagesrcset` 暂不支持，明确拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG；不支持 style、foreignObject、image/use 等嵌入形式 |
-| `fetch("data.json")`、运行时计算包内相对路径 | 本地兼容层提供 GET/HEAD，返回原始包字节；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
+| 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
+| `fetch("data.json")`、运行时计算包内相对路径 | 本地兼容层提供 GET/HEAD，返回原始包字节；query/hash 不改变读取的文件或字节，带 query 的 HTML 模板也一样；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
 | `fetch(new URL("./data.json", import.meta.url))` | 支持重写后的本地 Blob 对应原始字节；不存在的文件/外部 URL/非 GET-HEAD 明确 TypeError，无网络回退 |
 | `window.game.storageGet/Set/Delete` | 提供 adapter 时支持，严格对象 schema；不提供 adapter 时不暴露存储方法 |
 | fragment anchor | 支持；其他静态链接导航拒绝 |
 | 外部 URL、CDN、data URL 依赖 | 静态可识别的资源引用拒绝，不回退联网；请先打包成本地文件 |
 | 动态 DOM `src/href/style`、运行时拼接 CSS、任意 URL 构造模式 | 不做透明改写；作者需改为静态引用或 literal `new URL(..., import.meta.url)`；相对 URL 不能自动访问包资源，浏览器策略会产生资源错误 |
 | Worker/SharedWorker/ServiceWorker、XHR、eval/Function/importScripts | 不支持；可识别的直接构造/调用在 prepare 拒绝，另由 CSP/opaque Origin 尽力防御，不以删除全局函数宣称安全 |
-| iframe/object/embed/base/meta http-equiv、preload/prefetch、SRI/nomodule | 明确拒绝，不提供多文档或运行时引导兼容退路 |
+| HTML 模板作为 script/module/stylesheet/iframe 或导航目标 | 明确拒绝；被动 HTML 数据不是可执行 JS/CSS，也不是额外入口 |
+| 执行文档中的 iframe/object/embed/base/meta http-equiv、preload/prefetch、SRI/nomodule | 明确拒绝，不提供多文档或运行时引导兼容退路 |
 
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。
 

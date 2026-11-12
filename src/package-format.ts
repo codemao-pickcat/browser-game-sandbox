@@ -61,14 +61,20 @@ export function resolvePackageReference(reference: string, from: string): { path
   return { path, suffix: url.search + url.hash };
 }
 
-export type ResourcePart = string | { readonly asset: string; readonly suffix: string };
+export type ResourcePart = string | {
+  readonly asset: string;
+  /** Virtual search + hash; Blob materialization drops search, not hash. */
+  readonly suffix: string;
+};
 export interface CompiledResource {
   readonly path: string;
   readonly mime: string;
   readonly parts: readonly ResourcePart[] | null;
 }
 export interface PackagePlan {
+  /** Non-HTML Blob assets only; HTML template bytes remain in snapshot.files. */
   readonly resources: readonly CompiledResource[];
+  /** The sole executable document, compiled from root index.html. */
   readonly html: readonly ResourcePart[];
 }
 export interface PackageSnapshot {

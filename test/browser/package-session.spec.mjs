@@ -110,6 +110,73 @@ test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fe
   assert.deepEqual(errorsRpc,{codes:["INVALID_PAYLOAD","INVALID_PAYLOAD","INVALID_PAYLOAD"],value:null});
 });
 
+test("native Blob registry rejects appended query while accepting a fragment", async ({ page }) => {
+  await page.goto(`${origin}/host`); await page.waitForFunction(() => window.hostReady);
+  const result = await page.evaluate(async () => {
+    const blobUrl = URL.createObjectURL(new Blob(["native blob bytes"], { type:"text/plain" }));
+    try {
+      const base = await (await fetch(blobUrl)).text();
+      const fragment = await (await fetch(blobUrl + "#view?keep=1")).text();
+      let queryRejected = false;
+      try { await fetch(blobUrl + "?v=1#view"); } catch { queryRejected = true; }
+      return { base, fragment, queryRejected };
+    } finally { URL.revokeObjectURL(blobUrl); }
+  });
+  assert.deepEqual(result,{base:"native blob bytes",fragment:"native blob bytes",queryRejected:true});
+});
+
+test("static query references load real HTML/CSS/literal assets and fetch local bytes", async ({ page }) => {
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  const marker = `query-local-${Date.now()}`;
+  const frame = await open(page, {
+    "index.html": `<link id="sheet" rel="stylesheet" href="styles/main.css?v=1#style?keep=1"><img id="query-image" src="assets/${marker}.png?v=1#html?keep=1"><script src="classic.js?v=1#classic"></script><script type="module" src="scripts/main.js"></script>`,
+    "styles/main.css": `@import "./child.css?theme=1#child";body{background-image:url("../assets/${marker}.png?css=2#css?keep=1")}`,
+    "styles/child.css": "body { margin:13px; }",
+    "classic.js": "window.classicQueryLoaded=true;",
+    "scripts/main.js": `const asset=new URL("../assets/${marker}.png?literal=3#literal?keep=1",import.meta.url);const image=new Image();image.src=asset.href;await image.decode();window.queryRead={literalSearch:asset.search,literalHash:asset.hash,literalWidth:image.naturalWidth,fetchOne:await(await fetch("assets/data.txt?v=1#data")).text(),fetchTwo:await(await fetch("assets/data.txt?v=2")).text(),fetchBlob:await(await fetch(new URL("../assets/data.txt?data=3#bytes",import.meta.url))).text(),template:await(await fetch("assets/template.html?template=1")).text()};`,
+    [`assets/${marker}.png`]: png,
+    "assets/data.txt": "local query bytes",
+    "assets/template.html": "<p>passive query template</p>",
+  });
+  const result = await frame.evaluate(async () => {
+    const image=document.querySelector("#query-image");await image.decode();
+    const sheet=new URL(document.querySelector("#sheet").href), htmlImage=new URL(image.src);
+    const background=getComputedStyle(document.body).backgroundImage;
+    const backgroundUrl=new URL(background.slice(5,-2));
+    const cssImage=new Image();cssImage.src=backgroundUrl.href;await cssImage.decode();
+    return {...queryRead,classic:classicQueryLoaded,margin:getComputedStyle(document.body).margin,
+      stylesheetSearch:sheet.search,stylesheetHash:sheet.hash,htmlSearch:htmlImage.search,htmlHash:htmlImage.hash,htmlWidth:image.naturalWidth,
+      cssSearch:backgroundUrl.search,cssHash:backgroundUrl.hash,cssWidth:cssImage.naturalWidth};
+  });
+  assert.deepEqual(result,{literalSearch:"",literalHash:"#literal?keep=1",literalWidth:1,fetchOne:"local query bytes",fetchTwo:"local query bytes",fetchBlob:"local query bytes",template:"<p>passive query template</p>",classic:true,margin:"13px",stylesheetSearch:"",stylesheetHash:"#style?keep=1",htmlSearch:"",htmlHash:"#html?keep=1",htmlWidth:1,cssSearch:"",cssHash:"#css?keep=1",cssWidth:1});
+  assert.deepEqual(errors,[]);
+  assert.deepEqual(received.filter(path=>path.includes(marker)),[],"static queries must not fall back to HTTP");
+});
+
+test("nested HTML templates can be fetched as exact passive text without insertion or execution", async ({ page }) => {
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  const marker = `template-passive-${Date.now()}`;
+  const template = `<!doctype html>\r\n<meta http-equiv="refresh" content="0;url=${origin}/${marker}"><article id="template-content">模板 __SANDBOX_PACKAGE_ASSET_0__</article><script>window.templateExecuted = true; navigator.sendBeacon("${origin}/${marker}","unexpected");</script><script>not valid JS ???</script>`;
+  const frame = await open(page, {
+    "index.html": '<main id="root-entry">root entry</main><script type="module">window.templateExecuted=false;const response=await fetch("assets/template.html");window.templateRead={text:await response.text(),type:response.headers.get("content-type"),size:Number(response.headers.get("content-length")),status:response.status};</script>',
+    "assets/template.html": template,
+    "assets/nested/other.html": "<p>second nested template</p>",
+  });
+  const actual = await frame.evaluate(async () => {
+    const head = await fetch("assets/template.html", { method: "HEAD" });
+    return { ...templateRead, executed:templateExecuted, root:document.querySelector("#root-entry")?.textContent,
+      inserted:document.querySelector("#template-content") !== null,
+      nested:await (await fetch("assets/nested/other.html")).text(),
+      headType:head.headers.get("content-type"),headBody:await head.text(),origin:location.origin };
+  });
+  assert.deepEqual(actual, { text:template,type:"text/html",size:new TextEncoder().encode(template).byteLength,status:200,
+    executed:false,root:"root entry",inserted:false,nested:"<p>second nested template</p>",headType:"text/html",headBody:"",origin:"null" });
+  assert.deepEqual(await page.evaluate(() => events), ["connected", "ready"]);
+  assert.deepEqual(await page.evaluate(() => terminated), []);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(received.filter(path => path.includes(marker)), [], "template data must not activate network references");
+});
+
 test("fragment anchors stay inside srcdoc rather than requesting the parent's fallback URL", async ({ page }) => {
   const frame=await open(page,{"index.html":'<a id="link" href="#target">jump</a><div id="target">target</div>'});
   await frame.locator('#link').click();

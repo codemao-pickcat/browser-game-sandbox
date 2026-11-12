@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { prepareSandboxPackage, SANDBOX_RUNTIME_VERSION, SANDBOX_PACKAGE_LIMITS, createSandboxPackageSession, buildOfflineBrowserPolicy } from "../dist/index.js";
 import { snapshotPreparedPackage } from "../dist/package-prepare.js";
+import { resolvePackageReference } from "../dist/package-format.js";
 import { packageStoragePlugin } from "../dist/package-storage.js";
 import { SandboxHostRpcSession } from "../dist/host.js";
 import { SandboxBridgeClient } from "../dist/client.js";
@@ -46,6 +47,44 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     assert.notEqual(snapshotPreparedPackage(prepared).files["classic.js"][0], 0);
     assert.throws(() => snapshotPreparedPackage({ ...prepared }), /must come from prepare/);
   } finally { globalThis.fetch = originalFetch; delete globalThis.__packageExecuted; }
+});
+
+test("secondary HTML templates remain verified passive fetch data, never executable resources", async () => {
+  const template = '<!doctype html>\r\n<section id="template">模板 __SANDBOX_PACKAGE_ASSET_0__</section><script>globalThis.__templateExecuted = true; fetch("https://external.invalid/")</script><script>not valid JS ???</script>';
+  const sources = {
+    "index.html": '<main>root</main><script>fetch("assets/template.html").then(response => response.text())</script>',
+    "assets/template.html": template,
+    "assets/nested/fragment.HTML": "<p>nested HTML data</p>",
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error("prepare must not fetch template references"); };
+  globalThis.__templateExecuted = false;
+  try {
+    const packageInput = await input(sources);
+    const prepared = await prepareSandboxPackage(packageInput);
+    const snapshot = snapshotPreparedPackage(prepared);
+    assert.equal(prepared.manifest.entrypoint, "index.html");
+    assert.equal(new TextDecoder().decode(snapshot.files["assets/template.html"]), template);
+    assert.equal(new TextDecoder().decode(snapshot.files["assets/nested/fragment.HTML"]), sources["assets/nested/fragment.HTML"]);
+    assert.equal(snapshot.plan.resources.some(resource => resource.mime === "text/html"), false, "HTML data must not get Blob resources");
+    assert.equal(snapshot.plan.html.join("").includes('id="template"'), false, "only root HTML becomes the document");
+    assert.equal(globalThis.__templateExecuted, false);
+    assert.equal(prepared.totalBytes, Object.values(packageInput.files).reduce((sum, bytes) => sum + bytes.byteLength, 0));
+  } finally { globalThis.fetch = originalFetch; delete globalThis.__templateExecuted; }
+});
+
+test("secondary HTML still requires integrity, UTF-8, size limits and the root entrypoint", async () => {
+  const sources = { "index.html": "<p>root</p>", "assets/template.html": "<p>template</p>" };
+  for (const mutate of [
+    value => { value.manifest.files["assets/template.html"].sha256 = "0".repeat(64); },
+    value => { value.manifest.files["assets/template.html"].size++; },
+    value => { value.manifest.files["assets/template.html"].size = SANDBOX_PACKAGE_LIMITS.fileBytes + 1; },
+    value => { value.manifest.entrypoint = "assets/template.html"; },
+  ]) {
+    const value = await input(sources); mutate(value);
+    await assert.rejects(prepareSandboxPackage(value));
+  }
+  await assert.rejects(prepareSandboxPackage(await input({ ...sources, "assets/template.html": new Uint8Array([0xff]) })), error => error.code === "INVALID_ENCODING");
 });
 
 test("same-SHA logical paths may share a Uint8Array and buffer without detachment", async () => {
@@ -104,7 +143,13 @@ for (const [name, sources, code] of [
   ["external import", { "index.html": '<script type="module">import "https://remote.invalid/a.js"</script>' }, "UNSUPPORTED_MODULE"],
   ["external fetch", { "index.html": '<script>fetch("https://remote.invalid/data")</script>' }, "EXTERNAL_URL"],
   ["Worker", { "index.html": '<script>new Worker("a.js")</script>' }, "UNSUPPORTED_API"],
-  ["nested HTML", { "index.html": "ok", "other.html": "other" }, "UNSUPPORTED_FORMAT"],
+  ["HTML template as classic script", { "index.html": '<script src="assets/template.html"></script>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
+  ["HTML template as module", { "index.html": '<script type="module">import "./assets/template.html"</script>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
+  ["HTML template as stylesheet", { "index.html": '<link rel="stylesheet" href="assets/template.html">', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
+  ["HTML template in CSS import", { "index.html": '<style>@import "./assets/template.html";</style>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
+  ["HTML template as Blob asset", { "index.html": '<script type="module">new URL("./assets/template.html", import.meta.url)</script>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
+  ["HTML template iframe", { "index.html": '<iframe src="assets/template.html"></iframe>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_HTML"],
+  ["HTML template navigation", { "index.html": '<a href="assets/template.html">template</a>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_HTML"],
   ["srcset", { "index.html": '<img srcset="x.png 1x">' }, "UNSUPPORTED_HTML"],
   ["base", { "index.html": '<base href="https://remote.invalid">' }, "UNSUPPORTED_HTML"],
   ["meta refresh", { "index.html": '<meta http-equiv="refresh" content="0;url=https://remote.invalid">' }, "UNSUPPORTED_HTML"],
@@ -116,6 +161,26 @@ for (const [name, sources, code] of [
 ]) test(`rejects unsupported format: ${name}`, async () => {
   await assert.rejects(prepareSandboxPackage(await input(sources)), error => error.code === code);
 });
+
+test("virtual reference resolution retains query/hash until Blob materialization", async () => {
+  assert.deepEqual(resolvePackageReference("../image.png?v=1#view?keep=2", "styles/main.css"), {path:"image.png",suffix:"?v=1#view?keep=2"});
+  const prepared = await prepareSandboxPackage(await input({
+    "index.html": '<img src="image.png?v=1#html?keep=1"><style>body{background-image:url("image.png?v=2#css?keep=2")}</style>',
+    "image.png": new Uint8Array([1,2,3]),
+  }));
+  const suffixes=snapshotPreparedPackage(prepared).plan.html.filter(part=>typeof part!=="string").map(part=>part.suffix);
+  assert.deepEqual(suffixes,["?v=1#html?keep=1","?v=2#css?keep=2"]);
+});
+
+for (const suffix of ["?v=1", "#module", "?v=1#module"]) {
+  for (const kind of ["static import", "literal dynamic import", "module src"]) {
+    test(`ESM ${kind} still rejects query/hash ${suffix}`, async () => {
+      const html=kind==="module src"?`<script type="module" src="dep.js${suffix}"></script>`:
+        `<script type="module">${kind==="static import"?`import "./dep.js${suffix}"`:`import("./dep.js${suffix}")`}</script>`;
+      await assert.rejects(prepareSandboxPackage(await input({"index.html":html,"dep.js":"export const value=1;"})),error=>error.code==="UNSUPPORTED_REFERENCE" && error.message.includes("Module query/fragment"));
+    });
+  }
+}
 
 test("does not rewrite JavaScript strings/comments as resource references; supports ESM cycles", async () => {
   const prepared = await prepareSandboxPackage(await input({

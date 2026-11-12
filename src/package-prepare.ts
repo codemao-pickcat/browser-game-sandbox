@@ -87,7 +87,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     const resolved = resolvePackageReference(value, from);
     if (!Object.hasOwn(files, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
     const mime = resourceMime(resolved.path);
-    if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML subdocuments and document navigation are unsupported");
+    if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML is passive fetch data only; HTML assets, subdocuments and navigation are unsupported");
     if ((kind === "module" || kind === "script") && mime !== "text/javascript") packageError("UNSUPPORTED_REFERENCE", `Script must be .js or .mjs: ${value}`);
     if (kind === "css" && mime !== "text/css") packageError("UNSUPPORTED_REFERENCE", `Stylesheet must be .css: ${value}`);
     if (kind === "module") {
@@ -95,10 +95,9 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
       return moduleSpecifier(resolved.path);
     }
     if (kind === "fetch") return resolved.path;
-    // Blob registry identities have no query component. Static cache-busting
-    // queries are ignored; retain fragments (e.g. SVG fragment identifiers).
-    const hash = resolved.suffix.indexOf("#");
-    markers.push({ asset: resolved.path, suffix: hash < 0 ? "" : resolved.suffix.slice(hash) });
+    // Keep virtual suffixes intact for validation. The child strips static
+    // cache-busting queries only when materializing its Blob resource URLs.
+    markers.push({ asset: resolved.path, suffix: resolved.suffix });
     return `${MARKER}${markers.length - 1}__`;
   };
   const parts = (text: string): ResourcePart[] => {
@@ -111,12 +110,14 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     result.push(text.slice(offset));
     return result;
   };
-  const text = (path: string): string => {
+  const decodeText = (path: string): string => {
     const bytes = files[path]!;
     if (bytes.byteLength > LIMITS.textBytes) return packageError("TEXT_TOO_LARGE", `Text exceeds parser limit: ${path}`);
-    let source: string;
-    try { source = decoder.decode(bytes); }
+    try { return decoder.decode(bytes); }
     catch { return packageError("INVALID_ENCODING", `Expected UTF-8: ${path}`); }
+  };
+  const text = (path: string): string => {
+    const source = decodeText(path);
     if (source.includes(MARKER)) packageError("RESERVED_TEXT", `Reserved runtime marker: ${path}`);
     return source;
   };
@@ -251,7 +252,12 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
   // classic mode is checked separately by the browser. All imports are mapped.
   for (const path of Object.keys(files)) {
     const mime = resourceMime(path);
-    if (mime === "text/html") { if (path !== "index.html") packageError("UNSUPPORTED_FORMAT", "Only root index.html is supported; remove other HTML documents"); continue; }
+    if (mime === "text/html") {
+      // Only root index.html is compiled above. Secondary HTML is verified
+      // UTF-8 data for local fetch, not parsed, rewritten or made into a Blob.
+      if (path !== "index.html") decodeText(path);
+      continue;
+    }
     let transformed: string | null = null;
     if (mime === "text/javascript") {
       const source = text(path);
