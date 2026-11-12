@@ -3,8 +3,8 @@ import * as css from "css-tree";
 import { parse as parseJs, type Node } from "acorn";
 import { simple } from "acorn-walk";
 import {
-  SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION, assertPackagePath,
-  moduleSpecifier, packageError, resolvePackageReference, resourceMime,
+  SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION,
+  moduleSpecifier, packageError, resolvePackageReference, resourceMime, validatePackageManifest,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
 } from "./package-format.js";
@@ -31,41 +31,26 @@ type Edit = { start: number; end: number; text: string };
 
 /** No evaluation, DOM, fetch, or other network I/O. Identical validator in Node/browser. */
 export async function prepareSandboxPackage(input: SandboxPackageInput): Promise<PreparedSandboxPackage> {
-  if (!input || typeof input !== "object" || !input.manifest || !input.files ||
-      input.manifest.formatVersion !== 1 || input.manifest.entrypoint !== "index.html") {
-    return packageError("INVALID_MANIFEST", "Expected formatVersion 1 and root index.html");
+  if (!input || typeof input !== "object" || !input.files || typeof input.files !== "object" || Array.isArray(input.files)) {
+    return packageError("INVALID_MANIFEST", "Package files must be a byte record");
   }
-  const entries = Object.entries(input.manifest.files ?? {});
-  if (!entries.length || entries.length > LIMITS.files || !Object.hasOwn(input.manifest.files, "index.html")) {
-    return packageError("INVALID_MANIFEST", "Package must contain root index.html within the file count limit");
-  }
-  const manifestFiles: Record<string, { sha256: string; size: number }> = Object.create(null);
+  const { manifest, paths, totalBytes } = validatePackageManifest(input.manifest);
   const files: Record<string, Uint8Array> = Object.create(null);
-  let totalBytes = 0;
-  for (const [path, metadata] of entries) {
-    assertPackagePath(path);
-    resourceMime(path);
-    if (!metadata || !Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > LIMITS.fileBytes ||
-        typeof metadata.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.sha256)) {
-      packageError("INVALID_MANIFEST", `Invalid size or SHA-256: ${path}`);
-    }
+  for (const path of paths) {
+    const metadata = manifest.files[path]!;
     const bytes = Object.hasOwn(input.files, path) ? input.files[path] : undefined;
     if (!(bytes instanceof Uint8Array) || bytes.byteLength !== metadata.size) {
       packageError("INTEGRITY", `Byte length mismatch: ${path}`);
     }
-    totalBytes += metadata.size;
-    if (totalBytes > LIMITS.totalBytes) packageError("PACKAGE_TOO_LARGE", "Package byte budget exceeded");
     // Snapshot before awaiting: caller mutation cannot change the verified package.
     files[path] = new Uint8Array(bytes!);
-    manifestFiles[path] = Object.freeze({ sha256: metadata.sha256, size: metadata.size });
   }
-  if (Object.keys(input.files).length !== entries.length) packageError("INTEGRITY", "Unexpected files outside manifest");
+  if (Object.keys(input.files).length !== paths.length) packageError("INTEGRITY", "Unexpected files outside manifest");
   for (const [path, bytes] of Object.entries(files)) {
     const hash = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
     const hex = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
-    if (hex !== manifestFiles[path]!.sha256) packageError("INTEGRITY", `SHA-256 mismatch: ${path}`);
+    if (hex !== manifest.files[path]!.sha256) packageError("INTEGRITY", `SHA-256 mismatch: ${path}`);
   }
-  const manifest = Object.freeze({ formatVersion: 1 as const, entrypoint: "index.html" as const, files: Object.freeze(manifestFiles) });
   const plan = compilePackage(files);
   const prepared: PreparedSandboxPackage = Object.freeze({ runtimeVersion: SANDBOX_RUNTIME_VERSION, totalBytes, manifest, [preparedBrand]: true as const });
   snapshots.set(prepared, { manifest, files, totalBytes, plan });
@@ -133,6 +118,16 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
         node.value = reference(node.value, from, isImport ? "css" : "asset");
       }
     });
+    // Url nodes serialize an unquoted marker because the marker itself is
+    // safe. Its later Blob fragment may contain CSS delimiters, so force a
+    // quoted string through the CSS serializer, only in CSS URL contexts.
+    css.walk(ast, { visit: "Url", enter(node, item, list) {
+      const quoted: css.FunctionNode = {
+        type: "Function", name: "url",
+        children: new css.List<css.CssNode>().fromArray([{ type: "String", value: node.value }]),
+      };
+      list.replace(item, list.createItem(quoted));
+    } });
     return css.generate(ast);
   };
   const transformJs = (source: string, from: string, module: boolean): string => {

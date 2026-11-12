@@ -3,7 +3,7 @@ import { isBridgeInitMessage, assertValidOrigin } from "./protocol.js";
 import { parseSandboxGamePreloadConfig, type SandboxGameApiBindings } from "./game-api-config.js";
 import { loadSandboxPackage } from "./package-loader.js";
 import { prepareSandboxPackage, snapshotPreparedPackage } from "./package-prepare.js";
-import { SANDBOX_PACKAGE_LIMITS as LIMITS, assertPackagePath, type SandboxPackageManifest } from "./package-format.js";
+import { SANDBOX_PACKAGE_LIMITS as LIMITS, validatePackageManifest, type SandboxPackageManifest } from "./package-format.js";
 
 // Only the trusted SDK writes this script/config into srcdoc. It is not a
 // resource from the uploaded package and never executes before authentication.
@@ -21,7 +21,7 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
     let client: SandboxBridgeClient | undefined;
     let methods: SandboxGameApiBindings = {};
     let manifest: SandboxPackageManifest | undefined;
-    let paths: string[] = [];
+    let paths: readonly string[] = [];
     let index = 0, offset = 0, received = 0, nextSequence = 0;
     let expectedBytes = 0;
     let finished = false;
@@ -44,21 +44,12 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
           return;
         }
         if (data?.type === "begin" && client && !manifest) {
-          const candidate = data.manifest as SandboxPackageManifest;
-          if (!candidate || candidate.formatVersion !== 1 || candidate.entrypoint !== "index.html" ||
-              !candidate.files || typeof candidate.files !== "object") throw new TypeError("Invalid package manifest");
-          paths = Object.keys(candidate.files);
-          if (!paths.length || paths.length > LIMITS.files || !paths.includes("index.html")) throw new TypeError("Invalid package file count/entrypoint");
-          for (const path of paths) {
-            assertPackagePath(path);
-            const entry = candidate.files[path]!;
-            if (!entry || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > LIMITS.fileBytes || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new TypeError("Invalid package metadata");
-            expectedBytes += entry.size;
-            if (expectedBytes > LIMITS.totalBytes) throw new TypeError("Package budget exceeded");
-          }
-          if (expectedBytes !== data.totalBytes) throw new TypeError("Invalid package byte budget");
-          manifest = candidate;
-          for (const path of paths) files[path] = new Uint8Array(candidate.files[path]!.size);
+          const checked = validatePackageManifest(data.manifest);
+          if (checked.totalBytes !== data.totalBytes) throw new TypeError("Invalid package byte budget");
+          manifest = checked.manifest;
+          paths = checked.paths;
+          expectedBytes = checked.totalBytes;
+          for (const path of paths) files[path] = new Uint8Array(manifest.files[path]!.size);
           post({ type: "ack", sequence: -1 });
           return;
         }

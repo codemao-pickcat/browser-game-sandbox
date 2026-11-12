@@ -110,6 +110,106 @@ test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fe
   assert.deepEqual(errorsRpc,{codes:["INVALID_PAYLOAD","INVALID_PAYLOAD","INVALID_PAYLOAD"],value:null});
 });
 
+test("CSS SVG-view fragments remain quoted, parsed and actually rendered", async ({ page }) => {
+  const fragment="#svgView(viewBox(0,0,10,10))";
+  const frame=await open(page,{
+    "index.html":`<link rel="stylesheet" href="main.css"><style>.probe,#reference{width:20px;height:20px;background-size:20px 20px}#reference{background-color:lime}#style{background-image:url("sprite.svg${fragment}")}</style><div id="sheet" class="probe"></div><div id="inline" class="probe" style='background-image:url("sprite.svg${fragment}")'></div><div id="style" class="probe"></div><div id="imported" class="probe"></div><div id="set-url" class="probe"></div><div id="set-string" class="probe"></div><div id="reference"></div>`,
+    "main.css":`@import url("imports/base.css?v=1");#sheet{background-image:url("sprite.svg${fragment}")}#set-url{background-image:image-set(url("sprite.svg${fragment}") 1x)}#set-string{background-image:image-set("sprite.svg${fragment}" 1x)}`,
+    "imports/base.css":`#imported{background-image:url("../sprite.svg${fragment}")}`,
+    "sprite.svg":'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10" preserveAspectRatio="none"><rect width="10" height="10" fill="lime"/><rect x="10" width="10" height="10" fill="red"/></svg>',
+  });
+  // Avoid channel-specific iframe-border offsets in element screenshot clips.
+  await page.evaluate(()=>{session.iframe.style.border="0";});
+  const backgrounds=await frame.evaluate(()=>Object.fromEntries(["sheet","inline","style","imported","set-url","set-string"].map(id=>[id,getComputedStyle(document.getElementById(id)).backgroundImage])));
+  for(const [id,background] of Object.entries(backgrounds)) {
+    assert.notEqual(background,"none",`${id} declaration must survive CSS parsing`);
+    assert.ok(background.includes(fragment),`${id} must retain the SVG-view fragment`);
+  }
+  await frame.evaluate(async()=>{
+    const background=getComputedStyle(document.getElementById("sheet")).backgroundImage;
+    const image=new Image();image.src=JSON.parse(background.slice(4,-1));await image.decode();
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+  });
+  const expected=await frame.locator("#reference").screenshot();
+  for(const id of Object.keys(backgrounds)) {
+    assert.deepEqual(await frame.locator(`#${id}`).screenshot(),expected,`${id} must render the green SVG view, not drop the fragment or declaration`);
+  }
+});
+
+test("public browser prepare rejects prototype-chain MIME extensions", async ({ page }) => {
+  await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
+  const result=await page.evaluate(async()=>{
+    const codes=[];
+    for(const path of ["payload.constructor","payload.__proto__"]){
+      try {await launch({"index.html":"<p>root</p>",[path]:[]});codes.push("accepted");}
+      catch(error){codes.push(error.code);}
+    }
+    return {codes,frames:document.querySelectorAll("iframe").length};
+  });
+  assert.deepEqual(result,{codes:["UNSUPPORTED_FORMAT","UNSUPPORTED_FORMAT"],frames:0});
+});
+
+test("runtime local fetch rejects encoded escapes and accepts Unicode plus valid relative dot paths", async ({ page }) => {
+  const frame=await open(page,{
+    "index.html":'<script type="module" src="scripts/main.js"></script>',
+    "scripts/main.js":'import {value} from "./nested/%2e%2e/child.js";window.relativeModule=value;',
+    "scripts/child.js":'export const value="in-root module";',
+    "secret.txt":"root bytes",
+    "资产/数据.txt":"Unicode bytes",
+  });
+  const result=await frame.evaluate(async()=>{
+    const rejected=[];
+    for(const path of ["%2e%2e/secret.txt","/%2E./secret.txt","folder/../%2e%2e/secret.txt","bad%2fdir/../secret.txt","%252e%252e/secret.txt"]){
+      try {await fetch(path);rejected.push("accepted");}catch(error){rejected.push(error.code);}
+    }
+    return {rejected,module:relativeModule,unicode:await(await fetch("%E8%B5%84%E4%BA%A7/%E6%95%B0%E6%8D%AE.txt?next=%2f%5c#part")).text(),relative:await(await fetch("folder/%2E%2e/secret.txt")).text()};
+  });
+  assert.deepEqual(result,{rejected:Array(5).fill("INVALID_PATH"),module:"in-root module",unicode:"Unicode bytes",relative:"root bytes"});
+});
+
+test("child revalidates shared manifest rules before accepting chunks and still verifies SHA bytes", async ({ page }) => {
+  for(const scenario of ["version","entrypoint","count","sha-type","size","total","bytes"]){
+    await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
+    const result=await page.evaluate(async scenario=>{
+      const Original=window.MessageChannel;let chunks=0,tampered=false;
+      window.MessageChannel=class extends Original {
+        constructor(){
+          super();const post=this.port1.postMessage.bind(this.port1);
+          this.port1.postMessage=(message,transfer)=>{
+            if(message?.type==="begin"&&scenario!=="bytes"){
+              message=structuredClone(message);tampered=true;
+              const manifest=message.manifest;
+              if(scenario==="version")manifest.formatVersion=2;
+              if(scenario==="entrypoint")manifest.entrypoint="other.html";
+              if(scenario==="count")for(let i=0;i<2000;i++)manifest.files[`${i}.txt`]={sha256:"0".repeat(64),size:0};
+              if(scenario==="sha-type")manifest.files["index.html"].sha256=BigInt("1".repeat(64));
+              if(scenario==="size")manifest.files["index.html"].size=25*1024*1024+1;
+              if(scenario==="total"){
+                manifest.files["a.bin"]={sha256:"0".repeat(64),size:25*1024*1024};
+                manifest.files["b.bin"]={sha256:"0".repeat(64),size:25*1024*1024};
+              }
+            }
+            if(message?.type==="chunk"){
+              chunks++;
+              if(scenario==="bytes"&&!tampered){message.bytes[0]^=1;tampered=true;}
+            }
+            return post(message,transfer);
+          };
+        }
+      };
+      let error;
+      try{await launch({"index.html":"<p>verified root</p>"});error="accepted";}catch(reason){error=reason.message;}
+      return {error,chunks,tampered,frames:document.querySelectorAll("iframe").length,events};
+    },scenario);
+    assert.notEqual(result.error,"accepted",scenario);
+    assert.equal(result.frames,0,scenario);
+    assert.equal(result.events.includes("ready"),false,scenario);
+    assert.equal(result.tampered,true,scenario);
+    if(scenario==="bytes"){assert.ok(result.chunks>0);assert.match(result.error,/SHA-256 mismatch/);}
+    else assert.equal(result.chunks,0,`${scenario} must fail child admission, before allocation/chunk acceptance`);
+  }
+});
+
 test("native Blob registry rejects appended query while accepting a fragment", async ({ page }) => {
   await page.goto(`${origin}/host`); await page.waitForFunction(() => window.hostReady);
   const result = await page.evaluate(async () => {

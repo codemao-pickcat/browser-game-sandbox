@@ -47,7 +47,7 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 - 相同 SHA 的多个逻辑路径可以共用输入 Uint8Array/ArrayBuffer；预算仍逐逻辑文件累计。SDK 不 transfer/detach 调用者输入 buffer。
 - 包独立通道、256 KiB 传输分块、逐块确认；会话装载总超时 30s。初始 RPC 握手保持原有 5s 超时。
 - 原有通用 RPC **仍为 64 KiB**，没有为传包调大；30 请求/秒、并发/请求 ID/取消/超时/销毁检查照常生效。
-- 路径为规范的包相对路径，禁止空段、`.`/`..`、前导 `/`、反斜线、控制字符、空白、`% : ? #`。引用允许 `./`、`../`（不得越过包根）及 `/` 包根相对写法；引用中的正常 URL 编码会解码为确切包路径。
+- 路径为规范的包相对路径，禁止空段、`.`/`..`、前导 `/`、反斜线、控制字符、空白、`% : ? #`。引用允许 `./`、`../`（不得越过包根）及 `/` 包根相对写法；先逐段解码并校验深度，再进行 URL 规范化，编码的 dot 段与 literal dot 段同义，越过包根一律拒绝而非 clamp。正常 Unicode/文件名 URL 编码可用；编码的 slash/backslash、双重编码及非法编码拒绝，query/hash 不参与路径深度判断。
 - 普通静态资源引用允许 query（如 `img.png?v=1`）：查找只使用包路径，物化 Blob 时丢弃 query、保留完整 fragment（包括 fragment 内的 `?`）。不同 query 不代表不同网络资源或缓存版本，字节版本只由 manifest/SHA 决定；ES module 引用仍明确拒绝 query/hash。
 - HTML/CSS/JS/SVG 必须为 UTF-8。二进制文件保证字节完整性及扩展名支持，不承诺解码器能播放任意损坏或浏览器不支持的媒体编码。
 
@@ -63,7 +63,7 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 | `type="module"`（外部/内联） | 支持，含静态 import/export、循环引用、top-level await |
 | `import("./literal.js")` | 支持；非 literal 动态 import、bare specifier、import attributes/JSON modules、module query/hash 变体明确拒绝 |
 | `new URL("./asset", import.meta.url)` | 支持非 HTML literal 资源，重写为子文档创建的 Blob URL；动态参数与 HTML Blob 资源明确拒绝，HTML 模板请使用包内相对 fetch |
-| stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL；CSS Blob 依赖环拒绝 |
+| stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL，通过 CSS 字符串序列化保留引用和转义，包括 `#svgView(viewBox(...))` 等带括号 fragment；CSS Blob 依赖环拒绝 |
 | 图片、字体、音频、视频的静态资源引用 | 支持包内文件；HTML `srcset/imagesrcset` 暂不支持，明确拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG；不支持 style、foreignObject、image/use 等嵌入形式 |
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
@@ -106,6 +106,8 @@ Adapter 的方法在会话创建时绑定，必须由宿主闭包绑定**固定�
 ## 隔离与清理
 
 iframe 只启用 `allow-scripts`，不带 `allow-same-origin`；精确验证 `contentWindow`、`origin === "null"`、256-bit 一次性 token。子端核对实际父窗口、确切可信父 Origin 和 token，仅接受一次单端口 init。包传输与 RPC 使用不同 MessagePort，后者复用原 Host 安全机制；包不会混入普通 RPC 消息预算。用户脚本在认证、收齐/复核所有字节、创建全部 Blob 与 import map 之后才执行。没有父 Origin Blob 可供不透明子文档直接取用的假设。
+
+Node/browser prepare 与子端接收前共享同一纯 manifest 元数据 validator（版本、根入口、路径、文件数、SHA 字符串格式与大小预算），但子端收齐后仍独立复核文件实际字节的 SHA-256 与格式，不以宿主检查替代子端验证。MIME 查表仅接受 allowlist 自有键，未知扩展名不能通过 Object 原型链别名进入。
 
 包通道逐块确认并有独立预算/超时；ready 后关闭包通道。终止关闭端口、取消 Host 请求、移除监听器与 iframe，拒绝未完成 connected/ready，丢弃传输缓冲；子文档 pagehide/装载失败撤销其 Blob URL。准备句柄本身可由调用者保留复用，它持有的已验证字节直到调用者释放该句柄才可回收。
 

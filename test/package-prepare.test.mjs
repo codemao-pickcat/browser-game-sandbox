@@ -162,6 +162,18 @@ for (const [name, sources, code] of [
   await assert.rejects(prepareSandboxPackage(await input(sources)), error => error.code === code);
 });
 
+for (const path of ["payload.constructor", "payload.__proto__"]) {
+  test(`public prepare rejects prototype-chain MIME extension ${path}`, async () => {
+    await assert.rejects(prepareSandboxPackage(await input({"index.html":"<p>root</p>",[path]:new Uint8Array()})),error=>error.code==="UNSUPPORTED_FORMAT");
+  });
+}
+
+test("prepare rejects encoded over-root references instead of aliasing root resources", async () => {
+  for (const html of ['<script src="%2e%2e/secret.js"></script>', '<script>fetch(".%2E/data.txt")</script>', '<style>body{background:url("%2E%2e/image.png")}</style>']) {
+    await assert.rejects(prepareSandboxPackage(await input({"index.html":html,"secret.js":"", "data.txt":"local", "image.png":new Uint8Array()})),error=>error.code==="INVALID_PATH");
+  }
+});
+
 test("virtual reference resolution retains query/hash until Blob materialization", async () => {
   assert.deepEqual(resolvePackageReference("../image.png?v=1#view?keep=2", "styles/main.css"), {path:"image.png",suffix:"?v=1#view?keep=2"});
   const prepared = await prepareSandboxPackage(await input({

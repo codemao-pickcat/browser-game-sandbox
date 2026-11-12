@@ -40,6 +40,46 @@ export function assertPackagePath(path: string): void {
   }
 }
 
+/** Internal, pure metadata validation shared by host preparation and child admission. */
+export function validatePackageManifest(value: unknown): {
+  readonly manifest: SandboxPackageManifest;
+  readonly paths: readonly string[];
+  readonly totalBytes: number;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return packageError("INVALID_MANIFEST", "Expected formatVersion 1 and root index.html");
+  }
+  const candidate = value as Record<string, unknown>;
+  if (candidate.formatVersion !== 1 || candidate.entrypoint !== "index.html") {
+    return packageError("INVALID_MANIFEST", "Expected formatVersion 1 and root index.html");
+  }
+  if (!candidate.files || typeof candidate.files !== "object" || Array.isArray(candidate.files)) {
+    return packageError("INVALID_MANIFEST", "Package files must be a manifest record");
+  }
+  const entries = Object.entries(candidate.files);
+  if (!entries.length || entries.length > SANDBOX_PACKAGE_LIMITS.files || !Object.hasOwn(candidate.files, "index.html")) {
+    return packageError("INVALID_MANIFEST", "Package must contain root index.html within the file count limit");
+  }
+  const files: Record<string, { readonly sha256: string; readonly size: number }> = Object.create(null);
+  let totalBytes = 0;
+  for (const [path, value] of entries) {
+    assertPackagePath(path);
+    resourceMime(path);
+    if (!value || typeof value !== "object" || Array.isArray(value)) packageError("INVALID_MANIFEST", `Invalid size or SHA-256: ${path}`);
+    const metadata = value as Record<string, unknown>;
+    const size = metadata.size, sha256 = metadata.sha256;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0 || size > SANDBOX_PACKAGE_LIMITS.fileBytes ||
+        typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
+      packageError("INVALID_MANIFEST", `Invalid size or SHA-256: ${path}`);
+    }
+    totalBytes += size;
+    if (totalBytes > SANDBOX_PACKAGE_LIMITS.totalBytes) packageError("PACKAGE_TOO_LARGE", "Package byte budget exceeded");
+    files[path] = Object.freeze({ sha256, size });
+  }
+  const manifest = Object.freeze({ formatVersion: 1 as const, entrypoint: "index.html" as const, files: Object.freeze(files) });
+  return { manifest, paths: Object.freeze(Object.keys(files)), totalBytes };
+}
+
 /** Virtual URL resolution only; never uses the host origin or a network API. */
 export function resolvePackageReference(reference: string, from: string): { path: string; suffix: string } {
   if (typeof reference !== "string" || !reference || reference.trim() !== reference ||
@@ -47,17 +87,34 @@ export function resolvePackageReference(reference: string, from: string): { path
       /[\\\u0000-\u0020\u007f]/u.test(reference)) {
     return packageError("EXTERNAL_URL", `Only package-relative URLs are supported: ${reference}`);
   }
+  assertPackagePath(from);
+  // Validate each once-decoded segment BEFORE WHATWG URL can remove encoded
+  // dot steps or silently clamp an over-root traversal. Never decode a whole
+  // path first: encoded separators must not become structural separators.
+  const referencePath = reference.split(/[?#]/, 1)[0]!;
+  const rooted = referencePath.startsWith("/");
+  let depth = rooted ? 0 : from.split("/").length - 1;
+  for (const [index, encoded] of referencePath.split("/").entries()) {
+    let part: string;
+    try { part = decodeURIComponent(encoded); }
+    catch { return packageError("INVALID_PATH", `Invalid URL encoding: ${reference}`); }
+    if (part.includes("/") || part.includes("\\") || (!part && referencePath && !(rooted && index === 0))) {
+      packageError("INVALID_PATH", `Ambiguous URL separator: ${reference}`);
+    }
+    if (part === "..") {
+      if (--depth < 0) packageError("INVALID_PATH", `URL escapes package: ${reference}`);
+    } else if (part && part !== ".") {
+      // Also rejects leftover '%' (double encoding), controls and other
+      // forbidden path characters even if a later '..' would erase them.
+      assertPackagePath(part);
+      depth++;
+    }
+  }
   const url = new URL(reference, `https://package.invalid/${from}`);
   let path: string;
   try { path = decodeURIComponent(url.pathname.slice(1)); }
   catch { return packageError("INVALID_PATH", `Invalid URL: ${reference}`); }
   assertPackagePath(path);
-  // Reject traversal beyond the virtual root instead of URL's silent clamp.
-  let depth = reference.startsWith("/") ? 0 : from.split("/").length - 1;
-  for (const part of reference.split(/[?#]/, 1)[0]!.split("/")) {
-    if (part === "..") { if (--depth < 0) packageError("INVALID_PATH", `URL escapes package: ${reference}`); }
-    else if (part && part !== ".") depth++;
-  }
   return { path, suffix: url.search + url.hash };
 }
 
@@ -99,5 +156,6 @@ export const MIME_TYPES: Readonly<Record<string, string>> = Object.freeze({
 });
 export function resourceMime(path: string): string {
   const extension = path.split(".").pop()!.toLowerCase();
-  return MIME_TYPES[extension] ?? packageError("UNSUPPORTED_FORMAT", `Unsupported file extension: ${path}`);
+  if (!Object.hasOwn(MIME_TYPES, extension)) return packageError("UNSUPPORTED_FORMAT", `Unsupported file extension: ${path}`);
+  return MIME_TYPES[extension]!;
 }
