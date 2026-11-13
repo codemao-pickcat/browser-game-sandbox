@@ -64,11 +64,11 @@ test("ordinary Unicode encoding, in-root parents and virtual query/hash semantic
   assert.deepEqual(resolvePackageReference("#view?mode=1", "one/main.js"), {path:"one/main.js",suffix:"#view?mode=1"});
 });
 
-test("MIME lookup rejects inherited keys and preserves known case-insensitive types", () => {
-  for(const path of ["payload.constructor","payload.CONSTRUCTOR","payload.__proto__"]){
-    assert.throws(()=>resourceMime(path),error=>error.code==="UNSUPPORTED_FORMAT");
+test("MIME lookup uses the last filename dot and falls back safely for unknown and inherited keys", () => {
+  for(const path of ["payload.constructor","payload.CONSTRUCTOR","payload.__proto__","payload.toString", "constructor", "toString", "__proto__", "js", "json", "css", "html", "svg", "dir.js/js", "dir.json/json", "dir.txt/data", "data.", "app.data", "model.glb", "model.gltf", "app.wasm", "app.exe", "nested.zip", "template.htm"]){
+    assert.equal(resourceMime(path),"application/octet-stream",path);
   }
-  for(const [path,mime] of [["index.HTML","text/html"],["main.MJS","text/javascript"],["image.PNG","image/png"],["view.SVG","image/svg+xml"],["font.WOFF2","font/woff2"],["data.TXT","text/plain"]]){
+  for(const [path,mime] of [["index.HTML","text/html"],["dir.with.dots/main.MJS","text/javascript"],["image.PNG","image/png"],["view.SVG","image/svg+xml"],["font.WOFF2","font/woff2"],["data.TXT","text/plain"],["data.JSON","application/json"],["data.BIN","application/octet-stream"],["data.js.TXT","text/plain"]]){
     assert.equal(resourceMime(path),mime);
   }
 });
