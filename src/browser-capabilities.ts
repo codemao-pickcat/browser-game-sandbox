@@ -251,19 +251,20 @@ export function buildOfflineBrowserPolicy(): BrowserPolicy {
   enforcement[BROWSER_CAPABILITIES.networkConnect] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.websocket] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.webRtc] = "not-enforceable";
+  enforcement[BROWSER_CAPABILITIES.dedicatedWorker] = "not-distinguishable";
   return {
-    grantedCapabilities: [], sandboxTokens: ["allow-scripts"], iframeAllow: [],
+    grantedCapabilities: [BROWSER_CAPABILITIES.dedicatedWorker], sandboxTokens: ["allow-scripts"], iframeAllow: [],
     contentSecurityPolicy: [
       "default-src 'none'", "script-src 'unsafe-inline' blob:", "style-src 'unsafe-inline' blob:",
       "img-src blob:", "font-src blob:", "media-src blob:", "connect-src 'none'",
-      "worker-src 'none'", "child-src 'none'", "frame-src 'none'", "object-src 'none'",
+      "worker-src blob:", "child-src 'none'", "frame-src 'none'", "object-src 'none'",
       "base-uri 'none'", "form-action 'none'", "navigate-to 'none'",
     ].join("; "),
     permissionsPolicy: permissionPolicyFeatures.map(([feature]) => `${feature}=()`).join(", "),
     enforcement,
     warnings: [
       "Best-effort offline execution, not zero-network isolation. WebRTC/STUN and self-navigation are not reliably blocked in native browsers.",
-      "CSP blocks common fetch/WebSocket/resource/Worker exits; navigation termination is reactive and cannot prevent the first request.",
+      "CSP blocks common fetch/WebSocket/remote resource exits; navigation termination is reactive and cannot prevent the first request.",
       "navigate-to is not supported by all browsers. No arbitrary-URL host network proxy is provided.",
     ],
   };

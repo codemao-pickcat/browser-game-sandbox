@@ -6,6 +6,9 @@ import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSna
 export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings): Promise<() => void> {
   const urls = new Map<string, string>();
   const inlineModuleUrls: string[] = [];
+  const workerUrls = new Map<string, string>();
+  const workers = new Set<Worker>();
+  const NativeWorker = window.Worker;
   const byPath = new Map(snapshot.plan.resources.map(resource => [resource.path, resource]));
   const createObjectURL = URL.createObjectURL.bind(URL);
   const revokeObjectURL = URL.revokeObjectURL.bind(URL);
@@ -27,14 +30,14 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     }
   };
   document.addEventListener("click", onLinkClick, true);
-  const cleanup = () => { document.removeEventListener("click", onLinkClick, true); stopObserving(); client.close(); for (const url of urls.values()) revokeObjectURL(url); for (const url of inlineModuleUrls) revokeObjectURL(url); urls.clear(); inlineModuleUrls.length = 0; };
+  const cleanup = () => { document.removeEventListener("click", onLinkClick, true); stopObserving(); client.close(); for (const worker of workers) worker.terminate(); workers.clear(); for (const url of workerUrls.values()) revokeObjectURL(url); workerUrls.clear(); for (const url of urls.values()) revokeObjectURL(url); for (const url of inlineModuleUrls) revokeObjectURL(url); urls.clear(); inlineModuleUrls.length = 0; };
   window.addEventListener("pagehide", cleanup, { once: true });
   const render = (parts: readonly ResourcePart[]): string => parts.map(part => {
     if (typeof part === "string") return part;
     // Blob registry lookup has no query variants. Strip only the virtual
     // search, preserving the entire fragment (including any '?' inside it).
     const hash = part.suffix.indexOf("#");
-    return assetUrl(part.asset) + (hash < 0 ? "" : part.suffix.slice(hash));
+    return (part.worker ? workerUrl(part.asset) : assetUrl(part.asset)) + (hash < 0 ? "" : part.suffix.slice(hash));
   }).join("");
   const assetUrl = (path: string): string => {
     const known = urls.get(path);
@@ -46,6 +49,42 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     urls.set(path, url);
     return url;
   };
+  const workerByPath = new Map(snapshot.plan.workers.map(resource => [resource.path, resource]));
+  const workerUrl = (path: string): string => {
+    const known = workerUrls.get(path);
+    if (known) return known;
+    const resource = workerByPath.get(path);
+    if (!resource?.parts) throw new TypeError("Missing compiled Worker resource");
+    const url = createObjectURL(new Blob([render(resource.parts)], { type: "text/javascript" }));
+    workerUrls.set(path, url);
+    return url;
+  };
+  // Compatibility and lifecycle accounting, not a security boundary. CSP only
+  // permits Blob workers; opaque origin and inherited connect-src remain intact.
+  class PackageWorker extends NativeWorker {
+    constructor(scriptURL: string | URL, options?: WorkerOptions) {
+      if (workers.size >= 32) throw new TypeError("Offline package Worker limit exceeded (32)");
+      const url = String(scriptURL);
+      if (!url.startsWith("blob:")) throw new TypeError("Worker must use a package file or a child-created Blob URL");
+      // Chromium cannot start a native module Worker from an opaque-origin
+      // Blob. A classic bootstrap imports the module and queues early messages
+      // until its top-level await has settled, preserving Worker startup order.
+      const bootstrap = options?.type === "module" ? createObjectURL(new Blob([`
+        const pending = [];
+        const queue = event => { event.stopImmediatePropagation(); pending.push(event); };
+        self.addEventListener("message", queue);
+        import(${JSON.stringify(url)}).then(() => {
+          self.removeEventListener("message", queue);
+          for (const event of pending) self.dispatchEvent(new MessageEvent("message", { data:event.data, ports:event.ports, origin:event.origin, lastEventId:event.lastEventId }));
+        }).catch(error => { setTimeout(() => { throw error; }); });
+      `], { type: "text/javascript" })) : undefined;
+      if (bootstrap) inlineModuleUrls.push(bootstrap);
+      super(bootstrap ?? url, { ...options, type: "classic" });
+      workers.add(this);
+    }
+    override terminate(): void { workers.delete(this); super.terminate(); }
+  }
+  Object.defineProperty(window, "Worker", { value: PackageWorker, configurable: false, writable: false });
   try {
     // Materialize all compiled assets before user scripts. HTML templates stay
     // byte-only fetch data and never acquire a document/asset Blob URL.

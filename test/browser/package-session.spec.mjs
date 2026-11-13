@@ -417,7 +417,7 @@ test("dynamic external fetch, sockets, images, beacon and workers hit no real HT
     const beacon=navigator.sendBeacon(target+"/beacon","x");
     await new Promise(resolve => {
       try {
-        const worker=new Worker(URL.createObjectURL(new Blob(["postMessage('unsafe')"],{type:"text/javascript"})));
+        const worker=new Worker(target+"/worker");
         worker.onerror=()=>{failures.push("worker");resolve();};
         worker.onmessage=()=>resolve();
       } catch { failures.push("worker"); resolve(); }
@@ -465,4 +465,65 @@ test("loader failure rejects ready and removes the iframe, rather than fake-read
   // the runtime must detect them before claiming ready.
   assert.notEqual(error,"ready");
   await expect(page.locator("iframe")).toHaveCount(0);
+});
+
+
+test("dedicated Blob, classic file and module graph Workers run inside the opaque child", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<script type="module">
+      const request = (worker, value) => new Promise((resolve, reject) => {
+        worker.onmessage = event => { worker.terminate(); resolve(event.data); };
+        worker.onerror = event => reject(new Error("Worker initialization failed: " + event.message));
+        worker.postMessage(value, value instanceof ArrayBuffer ? [value] : []);
+      });
+      const blob = URL.createObjectURL(new Blob(['onmessage = e => postMessage(e.data.byteLength)'], {type:'text/javascript'}));
+      const bytes = new ArrayBuffer(16);
+      const a = await request(new Worker(blob), bytes);
+      const b = await request(new Worker('workers/classic.js'), 7);
+      const c = await request(new Worker(new URL('./workers/module.js', import.meta.url), {type:'module'}), 2);
+      window.workerResults = {a,b,c,detached:bytes.byteLength};
+    </script>`,
+    "workers/classic.js": "onmessage = e => postMessage(e.data * 3);",
+    "workers/module.js": "import {base} from './base.js'; const {extra} = await import('./extra.js'); self.onmessage = e => postMessage(base + extra + e.data);",
+    "workers/base.js": "export const base = 30;",
+    "workers/extra.js": "export const extra = 10;",
+  });
+  assert.deepEqual(await frame.evaluate(() => workerResults), {a:16,b:21,c:42,detached:0});
+  assert.equal(await frame.evaluate(() => location.origin), "null");
+});
+
+test("Blob Workers inherit network restrictions and are closed with the session", async ({ page }) => {
+  const observedWorkers = [];
+  page.on('worker', worker => observedWorkers.push(worker));
+  const target = `${origin}/worker-network-probe`;
+  const frame = await open(page, {"index.html": `<p>Worker host</p>`});
+  const source = `onmessage = async () => { let blocked = false; try { await fetch(${JSON.stringify(target)}); } catch { blocked = true; } postMessage({blocked}); };`;
+  const result = await frame.evaluate(async source => {
+    const url = URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
+    window.liveWorker = new Worker(url);
+    return await new Promise((resolve, reject) => { liveWorker.onmessage=e=>resolve(e.data);liveWorker.onerror=reject;liveWorker.postMessage(null); });
+  }, source);
+  assert.deepEqual(result, {blocked:true});
+  assert.equal(received.includes('/worker-network-probe'), false);
+  assert.equal(observedWorkers.length, 1);
+  const closed = new Promise(resolve => observedWorkers[0].once('close', resolve));
+  await page.evaluate(() => session.terminate());
+  await closed;
+  assert.equal(await page.locator('iframe').count(), 0);
+});
+
+test("Worker admission rejects remote scripts and bounds live direct Workers", async ({ page }) => {
+  const frame = await open(page, {"index.html":"<p>Worker budget</p>"});
+  const result = await frame.evaluate(() => {
+    let remoteBlocked=false,limitBlocked=false;
+    try { new Worker('https://example.invalid/worker.js'); } catch { remoteBlocked=true; }
+    const url=URL.createObjectURL(new Blob(['onmessage=()=>{}'],{type:'text/javascript'}));
+    const workers=Array.from({length:32},()=>new Worker(url));
+    try {new Worker(url);} catch {limitBlocked=true;}
+    workers[0].terminate();
+    const replacement=new Worker(url);
+    replacement.terminate();workers.forEach(worker=>worker.terminate());
+    return {remoteBlocked,limitBlocked};
+  });
+  assert.deepEqual(result,{remoteBlocked:true,limitBlocked:true});
 });

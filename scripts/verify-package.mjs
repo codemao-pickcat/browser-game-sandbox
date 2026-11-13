@@ -4,7 +4,9 @@ import * as publicApi from "../dist/index.js";
 
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
-const [packed] = JSON.parse(input);
+const result = JSON.parse(input);
+// npm 12 keys pack output by package name; npm 11 returns an array.
+const [packed] = Array.isArray(result) ? result : Object.values(result);
 const files = new Set(packed.files.map(file => file.path));
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 assert.equal(pkg.publishConfig?.registry, "https://npm.pkg.github.com");
