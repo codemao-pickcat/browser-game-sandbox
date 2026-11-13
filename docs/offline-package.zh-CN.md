@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.3.0）
+# 离线作品包运行时（0.3.1）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.3.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.3.1"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -73,7 +73,8 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 | fragment anchor | 支持；其他静态链接导航拒绝 |
 | 外部 URL、CDN、data URL 依赖 | 静态可识别的资源引用拒绝，不回退联网；请先打包成本地文件 |
 | 动态 DOM `src/href/style`、运行时拼接 CSS、任意 URL 构造模式 | 不做透明改写；作者需改为静态引用或 literal `new URL(..., import.meta.url)`；相对 URL 不能自动访问包资源，浏览器策略会产生资源错误 |
-| Worker/SharedWorker/ServiceWorker、XHR、eval/Function/importScripts | 不支持；可识别的直接构造/调用在 prepare 拒绝，另由 CSP/opaque Origin 尽力防御，不以删除全局函数宣称安全 |
+| 独立 Worker | 支持子文档创建的 Blob Worker、literal 包内 `.js/.mjs` 路径及 `new Worker(new URL("./worker.js", import.meta.url), options)`；保留消息、transferable、classic/module 选项。模块 Worker 在 classic bootstrap 中通过 import 执行，初始化完成前排队消息（重放的 MessageEvent 为合成事件）；包内静态/动态 literal import 物化为 Blob 图，不支持循环依赖。最多 32 个直接存活 Worker，terminate 释放名额，会话销毁时终止；嵌套 Worker 和 CPU/内存不承诺硬配额。Worker 内不提供 `window.game` 或包内 fetch 兼容层，importScripts 不支持；动态 Blob 源需自包含，模块 import map 只存在于主文档。CSP 仅允许 Blob Worker，继续继承禁用外部连接的策略 |
+| SharedWorker/ServiceWorker、XHR、eval/Function/importScripts | 不支持；可识别的直接构造/调用在 prepare 拒绝，另由 CSP/opaque Origin 尽力防御，不以删除全局函数宣称安全 |
 | HTML 模板作为 script/module/stylesheet/iframe 或导航目标 | 明确拒绝；被动 HTML 数据不是可执行 JS/CSS，也不是额外入口 |
 | 执行文档中的 iframe/object/embed/base/meta http-equiv、preload/prefetch、SRI/nomodule | 明确拒绝，不提供多文档或运行时引导兼容退路 |
 
@@ -109,9 +110,9 @@ iframe 只启用 `allow-scripts`，不带 `allow-same-origin`；精确验证 `co
 
 Node/browser prepare 与子端接收前共享同一纯 manifest 元数据 validator（版本、根入口、路径、文件数、SHA 字符串格式与大小预算），但子端收齐后仍独立复核文件实际字节的 SHA-256 与格式，不以宿主检查替代子端验证。MIME 查表仅接受 allowlist 自有键，未知扩展名不能通过 Object 原型链别名进入。
 
-包通道逐块确认并有独立预算/超时；ready 后关闭包通道。终止关闭端口、取消 Host 请求、移除监听器与 iframe，拒绝未完成 connected/ready，丢弃传输缓冲；子文档 pagehide/装载失败撤销其 Blob URL。准备句柄本身可由调用者保留复用，它持有的已验证字节直到调用者释放该句柄才可回收。
+包通道逐块确认并有独立预算/超时；ready 后关闭包通道。终止关闭端口、取消 Host 请求、移除监听器与 iframe，拒绝未完成 connected/ready，丢弃传输缓冲；子文档 pagehide/装载失败终止直接创建的 Worker 并撤销其 Blob URL。准备句柄本身可由调用者保留复用，它持有的已验证字节直到调用者释放该句柄才可回收。
 
-`buildOfflineBrowserPolicy()` 公布 offline profile：阻断常规连接、远程资源、嵌套文档、Worker、form/popup/top-navigation；策略声明不标注零网络 enforced。`navigate-to` 在部分浏览器不受支持，Host 对 bootstrap 之后的 iframe load 反应式终止，但可能已发出第一次导航请求（204/未替换文档的导航不一定产生 load）。WebRTC/STUN、导航、浏览器漏洞、CPU/内存饥饿和用户授权侧信道不获硬保证；普通页面不能代替 OS 级沙箱。需要严格零网络时，应另用具备网络隔离的执行环境。
+`buildOfflineBrowserPolicy()` 公布 offline profile：阻断常规连接、远程资源、嵌套文档、远程 Worker、form/popup/top-navigation；策略声明不标注零网络 enforced。`navigate-to` 在部分浏览器不受支持，Host 对 bootstrap 之后的 iframe load 反应式终止，但可能已发出第一次导航请求（204/未替换文档的导航不一定产生 load）。WebRTC/STUN、导航、浏览器漏洞、CPU/内存饥饿和用户授权侧信道不获硬保证；普通页面不能代替 OS 级沙箱。需要严格零网络时，应另用具备网络隔离的执行环境。
 
 ## 验证与依赖
 

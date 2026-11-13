@@ -22,7 +22,7 @@ The browser suite requires Chromium once:
 npx playwright install chromium
 ```
 
-## Offline package entry (0.3.0)
+## Offline package entry (0.3.1)
 
 ```ts
 import { prepareSandboxPackage, createSandboxPackageSession } from "@codemao-pickcat/browser-game-sandbox";
@@ -40,7 +40,7 @@ The execution entry is always root `index.html`; secondary HTML templates remain
 
 Optional string-only `window.game.storageGet/Set/Delete` use the existing host-plugin/RPC validation and a scope-bound host adapter. Limits match MOSS: 2000 files, 512 UTF-8 path bytes, 25 MiB/file and 50 MiB/package. `SANDBOX_RUNTIME_VERSION` equals the package version. The standalone `package.runtime.js` export is a self-contained trusted ESM browser bundle; `npm run prepare` builds dist without Git metadata, including for pinned-commit Git dependencies.
 
-**Native-browser offline restrictions are best-effort, not zero-network isolation.** CSP blocks tested common fetch/WebSocket/resource/Worker exits; WebRTC/STUN and self-navigation are not strongly guaranteed. There is no arbitrary-URL network proxy. See the [complete API, support matrix, limits and threat model](./docs/offline-package.zh-CN.md).
+**Native-browser offline restrictions are best-effort, not zero-network isolation.** CSP blocks tested common fetch/WebSocket/remote resource exits; WebRTC/STUN and self-navigation are not strongly guaranteed. There is no arbitrary-URL network proxy. See the [complete API, support matrix, limits and threat model](./docs/offline-package.zh-CN.md).
 
 ## Existing cross-origin runtime
 

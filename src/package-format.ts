@@ -1,4 +1,4 @@
-export const SANDBOX_RUNTIME_VERSION = "0.3.0" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.3.1" as const;
 
 export interface SandboxPackageManifest {
   readonly formatVersion: 1;
@@ -120,6 +120,8 @@ export function resolvePackageReference(reference: string, from: string): { path
 
 export type ResourcePart = string | {
   readonly asset: string;
+  /** Dedicated worker graph: imports use Blob URLs instead of document import maps. */
+  readonly worker?: boolean;
   /** Virtual search + hash; Blob materialization drops search, not hash. */
   readonly suffix: string;
 };
@@ -131,6 +133,7 @@ export interface CompiledResource {
 export interface PackagePlan {
   /** Non-HTML Blob assets only; HTML template bytes remain in snapshot.files. */
   readonly resources: readonly CompiledResource[];
+  readonly workers: readonly CompiledResource[];
   /** The sole executable document, compiled from root index.html. */
   readonly html: readonly ResourcePart[];
 }

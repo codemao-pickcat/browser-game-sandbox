@@ -34,7 +34,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.3.0");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.3.1");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -142,7 +142,7 @@ for (const [name, sources, code] of [
   ["dynamic import", { "index.html": '<script type="module">import(window.path)</script>' }, "DYNAMIC_IMPORT"],
   ["external import", { "index.html": '<script type="module">import "https://remote.invalid/a.js"</script>' }, "UNSUPPORTED_MODULE"],
   ["external fetch", { "index.html": '<script>fetch("https://remote.invalid/data")</script>' }, "EXTERNAL_URL"],
-  ["Worker", { "index.html": '<script>new Worker("a.js")</script>' }, "UNSUPPORTED_API"],
+  ["SharedWorker", { "index.html": '<script>new SharedWorker("a.js")</script>' }, "UNSUPPORTED_API"],
   ["HTML template as classic script", { "index.html": '<script src="assets/template.html"></script>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
   ["HTML template as module", { "index.html": '<script type="module">import "./assets/template.html"</script>', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
   ["HTML template as stylesheet", { "index.html": '<link rel="stylesheet" href="assets/template.html">', "assets/template.html": "<p>template</p>" }, "UNSUPPORTED_REFERENCE"],
@@ -207,7 +207,7 @@ test("offline profile is opaque and explicitly refuses zero-network enforcement 
   const policy = buildOfflineBrowserPolicy();
   assert.deepEqual(policy.sandboxTokens, ["allow-scripts"]);
   assert.match(policy.contentSecurityPolicy, /connect-src 'none'/);
-  assert.match(policy.contentSecurityPolicy, /worker-src 'none'/);
+  assert.match(policy.contentSecurityPolicy, /worker-src blob:/);
   assert.equal(policy.enforcement["network.webrtc"], "not-enforceable");
   assert.equal(policy.enforcement["network.connect"], "not-enforceable");
   assert.ok(policy.warnings.some(w => w.includes("not zero-network")));
@@ -258,4 +258,20 @@ test("storage plugin retains Host RPC schema/auth/limits and immutable adapter b
     await client.call("package.storage.delete", { key: "save" });
     assert.equal(await client.call("package.storage.get", { key: "save" }), null);
   } finally { host.terminate(); client.close(); }
+});
+
+
+test("Worker file admission checks local bytes, module graph and Blob dependencies", async () => {
+  const sources={"index.html":'<script>new Worker("workers/main.js", {type:"module"})</script>',"workers/main.js":'import {n} from "./dep.js"; postMessage(n);',"workers/dep.js":'export const n=42;'};
+  const prepared=await prepareSandboxPackage(await input(sources));
+  const snapshot=snapshotPreparedPackage(prepared);
+  assert.equal(snapshot.plan.workers.length,2);
+  assert.ok(snapshot.plan.workers.find(r=>r.path==='workers/main.js').parts.some(p=>typeof p!=='string'&&p.worker&&p.asset==='workers/dep.js'));
+  for(const [files,code] of [
+    [{"index.html":'<script>new Worker("https://external.invalid/x.js")</script>'},'EXTERNAL_URL'],
+    [{"index.html":'<script>new Worker("missing.js")</script>'},'MISSING_RESOURCE'],
+    [{...sources,"workers/dep.js":'import "./main.js"; export const n=42;'},'RESOURCE_CYCLE'],
+    [{...sources,"workers/main.js":'import "not-installed";'},'UNSUPPORTED_MODULE'],
+  ]) await assert.rejects(prepareSandboxPackage(await input(files)),error=>error.code===code);
+  await prepareSandboxPackage(await input({"index.html":'<script>const source="onmessage=e=>postMessage(e.data)"; const url=URL.createObjectURL(new Blob([source])); new Worker(url);</script>'}));
 });

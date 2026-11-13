@@ -65,15 +65,16 @@ export function snapshotPreparedPackage(prepared: PreparedSandboxPackage): Packa
 }
 
 export function compilePackage(files: Readonly<Record<string, Uint8Array>>): PackagePlan {
-  const markers: { asset: string; suffix: string }[] = [];
+  const markers: { asset: string; suffix: string; worker?: boolean }[] = [];
+  const workerPaths = new Set<string>();
   const classicPaths = new Set<string>();
-  const reference = (value: string, from: string, kind: "asset" | "script" | "module" | "css" | "fetch" = "asset"): string => {
+  const reference = (value: string, from: string, kind: "asset" | "script" | "module" | "css" | "fetch" | "worker" = "asset"): string => {
     if (value.startsWith("#") && kind === "asset") return value;
     const resolved = resolvePackageReference(value, from);
     if (!Object.hasOwn(files, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
     const mime = resourceMime(resolved.path);
     if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML is passive fetch data only; HTML assets, subdocuments and navigation are unsupported");
-    if ((kind === "module" || kind === "script") && mime !== "text/javascript") packageError("UNSUPPORTED_REFERENCE", `Script must be .js or .mjs: ${value}`);
+    if ((kind === "module" || kind === "script" || kind === "worker") && mime !== "text/javascript") packageError("UNSUPPORTED_REFERENCE", `Script must be .js or .mjs: ${value}`);
     if (kind === "css" && mime !== "text/css") packageError("UNSUPPORTED_REFERENCE", `Stylesheet must be .css: ${value}`);
     if (kind === "module") {
       if (resolved.suffix) packageError("UNSUPPORTED_REFERENCE", "Module query/fragment variants are unsupported");
@@ -82,7 +83,11 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     if (kind === "fetch") return resolved.path;
     // Keep virtual suffixes intact for validation. The child strips static
     // cache-busting queries only when materializing its Blob resource URLs.
-    markers.push({ asset: resolved.path, suffix: resolved.suffix });
+    if (kind === "worker") {
+      if (resolved.suffix) packageError("UNSUPPORTED_REFERENCE", "Worker query/fragment variants are unsupported");
+      workerPaths.add(resolved.path);
+    }
+    markers.push({ asset: resolved.path, suffix: resolved.suffix, ...(kind === "worker" ? { worker: true } : {}) });
     return `${MARKER}${markers.length - 1}__`;
   };
   const parts = (text: string): ResourcePart[] => {
@@ -130,7 +135,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     } });
     return css.generate(ast);
   };
-  const transformJs = (source: string, from: string, module: boolean): string => {
+  const transformJs = (source: string, from: string, module: boolean, worker = false): string => {
     let ast: Node;
     try { ast = parseJs(source, { ecmaVersion: "latest", sourceType: module ? "module" : "script", allowHashBang: true }); }
     catch { return packageError("INVALID_JAVASCRIPT", `Invalid ${module ? "module" : "classic script"}: ${from}`); }
@@ -146,7 +151,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
       if (value === undefined) packageError("DYNAMIC_IMPORT", `import() requires a string literal: ${from}`);
       if (node.options || (Array.isArray(node.attributes) && node.attributes.length)) packageError("UNSUPPORTED_MODULE", "Import attributes are unsupported");
       if (!value!.startsWith("./") && !value!.startsWith("../") && !value!.startsWith("/")) packageError("UNSUPPORTED_MODULE", `Bare/external module specifier: ${value}`);
-      edits.push({ start: sourceNode.start, end: sourceNode.end, text: JSON.stringify(reference(value!, from, "module")) });
+      edits.push({ start: sourceNode.start, end: sourceNode.end, text: JSON.stringify(reference(value!, from, worker ? "worker" : "module")) });
     };
     simple(ast, {
       ImportDeclaration: node => replaceImport(node as JsNode),
@@ -166,7 +171,21 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
         const n = node as JsNode;
         const callee = n.callee as JsNode;
         const args = n.arguments as JsNode[];
-        if (callee.type === "Identifier" && ["Worker", "SharedWorker", "XMLHttpRequest", "Function"].includes(String(callee.name))) packageError("UNSUPPORTED_API", `${callee.name} is unsupported in offline packages: ${from}`);
+        if (callee.type === "Identifier" && ["SharedWorker", "XMLHttpRequest", "Function"].includes(String(callee.name))) packageError("UNSUPPORTED_API", `${callee.name} is unsupported in offline packages: ${from}`);
+        if (callee.type === "Identifier" && callee.name === "Worker") {
+          const arg = args[0];
+          let value = literal(arg);
+          if (arg?.type === "NewExpression" && (arg.callee as JsNode)?.name === "URL") {
+            const urlArgs = arg.arguments as JsNode[];
+            const base = urlArgs[1];
+            if (base?.type === "MemberExpression" && (base.object as JsNode)?.type === "MetaProperty" && (base.property as JsNode)?.name === "url") value = literal(urlArgs[0]);
+          }
+          // Computed Blob URLs (e.g. Meshopt's worker pool) are checked by the browser at runtime.
+          if (value !== undefined) {
+            for (let i = edits.length - 1; i >= 0; i--) if (edits[i]!.start >= arg!.start && edits[i]!.end <= arg!.end) edits.splice(i, 1);
+            edits.push({ start: arg!.start, end: arg!.end, text: JSON.stringify(reference(value, from, "worker")) });
+          }
+        }
         if (callee.type === "Identifier" && callee.name === "URL") {
           const base = args[1] as JsNode | undefined;
           if (base?.type === "MemberExpression" && (base.object as JsNode)?.type === "MetaProperty" && (base.property as JsNode)?.name === "url") {
@@ -283,18 +302,25 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     }
     resources.push({ path, mime, parts: transformed === null ? null : parts(transformed) });
   }
-  // CSS Blob dependencies must be acyclic; ESM cycles use import maps instead.
+  // Only statically reachable worker graphs need a second compilation. Workers
+  // have no document import map, so their module edges become direct Blob URLs.
+  const workers: CompiledResource[] = [];
+  for (const path of workerPaths) workers.push({ path, mime: "text/javascript", parts: parts(transformJs(text(path), path, true, true)) });
+  // Blob dependencies must be acyclic; document ESM cycles still use import maps.
   const byPath = new Map(resources.map(resource => [resource.path, resource]));
   const active = new Set<string>(); const done = new Set<string>();
-  const checkCycle = (path: string) => {
-    if (active.has(path)) packageError("RESOURCE_CYCLE", `Cyclic Blob resource references: ${path}`);
-    if (done.has(path)) return;
-    active.add(path);
-    for (const part of byPath.get(path)?.parts ?? []) if (typeof part !== "string") checkCycle(part.asset);
-    active.delete(path); done.add(path);
+  const workerByPath = new Map(workers.map(resource => [resource.path, resource]));
+  const checkCycle = (path: string, worker = false) => {
+    const key = `${worker ? "worker:" : "asset:"}${path}`;
+    if (active.has(key)) packageError("RESOURCE_CYCLE", `Cyclic Blob resource references: ${path}`);
+    if (done.has(key)) return;
+    active.add(key);
+    for (const part of (worker ? workerByPath : byPath).get(path)?.parts ?? []) if (typeof part !== "string") checkCycle(part.asset, part.worker);
+    active.delete(key); done.add(key);
   };
   for (const path of byPath.keys()) checkCycle(path);
-  const plan = { resources, html };
+  for (const path of workerByPath.keys()) checkCycle(path, true);
+  const plan = { resources, workers, html };
   if (encoder.encode(JSON.stringify(plan)).byteLength > LIMITS.compiledBytes) packageError("PACKAGE_TOO_LARGE", "Compiled package budget exceeded");
   return plan;
 }
