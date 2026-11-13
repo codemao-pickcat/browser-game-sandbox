@@ -252,10 +252,11 @@ export function buildOfflineBrowserPolicy(): BrowserPolicy {
   enforcement[BROWSER_CAPABILITIES.websocket] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.webRtc] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.dedicatedWorker] = "not-distinguishable";
+  enforcement[BROWSER_CAPABILITIES.wasm] = "enforced";
   return {
-    grantedCapabilities: [BROWSER_CAPABILITIES.dedicatedWorker], sandboxTokens: ["allow-scripts"], iframeAllow: [],
+    grantedCapabilities: [BROWSER_CAPABILITIES.dedicatedWorker, BROWSER_CAPABILITIES.wasm], sandboxTokens: ["allow-scripts"], iframeAllow: [],
     contentSecurityPolicy: [
-      "default-src 'none'", "script-src 'unsafe-inline' blob:", "style-src 'unsafe-inline' blob:",
+      "default-src 'none'", "script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:", "style-src 'unsafe-inline' blob:",
       "img-src blob:", "font-src blob:", "media-src blob:", "connect-src 'none'",
       "worker-src blob:", "child-src 'none'", "frame-src 'none'", "object-src 'none'",
       "base-uri 'none'", "form-action 'none'", "navigate-to 'none'",

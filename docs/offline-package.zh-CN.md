@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.3.1）
+# 离线作品包运行时（0.3.2）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.3.1"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.3.2"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -51,7 +51,7 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 - 普通静态资源引用允许 query（如 `img.png?v=1`）：查找只使用包路径，物化 Blob 时丢弃 query、保留完整 fragment（包括 fragment 内的 `?`）。不同 query 不代表不同网络资源或缓存版本，字节版本只由 manifest/SHA 决定；ES module 引用仍明确拒绝 query/hash。
 - HTML/CSS/JS/SVG 必须为 UTF-8。二进制文件保证字节完整性及扩展名支持，不承诺解码器能播放任意损坏或浏览器不支持的媒体编码。
 
-允许的扩展名：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。只有根 `index.html` 可作为执行入口。其他 `.html`（如 `assets/template.html`）允许作为被动模板数据，仍校验 SHA-256、大小与 UTF-8；仅保留原始字节供包内相对 fetch 读取，不解析/改写模板、不生成 HTML Blob、不插入 DOM，也不提供次级文档或导航入口。WASM、压缩包及未知扩展名拒绝。ZIP 解包由平台负责，本 API 不解析 ZIP。
+允许的扩展名：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。只有根 `index.html` 可作为执行入口。其他 `.html`（如 `assets/template.html`）允许作为被动模板数据，仍校验 SHA-256、大小与 UTF-8；仅保留原始字节供包内相对 fetch 读取，不解析/改写模板、不生成 HTML Blob、不插入 DOM，也不提供次级文档或导航入口。`.wasm` 文件、压缩包及未知扩展名拒绝。内嵌在 JavaScript 的 WebAssembly 字节可通过 compile/instantiate 执行，主线程和 Worker 均支持；CSP 只增加 `wasm-unsafe-eval`，不放开 JavaScript eval/Function。ZIP 解包由平台负责，本 API 不解析 ZIP。
 
 ## 支持矩阵
 
