@@ -86,8 +86,8 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
   }
   Object.defineProperty(window, "Worker", { value: PackageWorker, configurable: false, writable: false });
   try {
-    // Materialize all compiled assets before user scripts. HTML templates stay
-    // byte-only fetch data and never acquire a document/asset Blob URL.
+    // Materialize only compiled known assets before user scripts. HTML templates
+    // and fallback data stay byte-only and never acquire automatic Blob URLs.
     for (const path of byPath.keys()) assetUrl(path);
     const api: Record<string, (payload: unknown, options?: Parameters<SandboxBridgeClient["call"]>[2]) => Promise<unknown>> = Object.create(null);
     for (const [name, binding] of Object.entries(methods)) {
@@ -105,8 +105,8 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
       if (method !== "GET" && method !== "HEAD") throw new TypeError("Offline package fetch supports GET/HEAD only");
       const reference = input instanceof Request ? input.url : String(input);
       const path = blobs.get(reference.split(/[?#]/, 1)[0]!) ?? resolvePackageReference(reference, "index.html").path;
-      const bytes = snapshot.files[path];
-      if (!bytes) throw new TypeError(`Missing offline fetch resource: ${reference}`);
+      if (!Object.hasOwn(snapshot.files, path)) throw new TypeError(`Missing offline fetch resource: ${reference}`);
+      const bytes = snapshot.files[path]!;
       signal?.throwIfAborted();
       return new Response(method === "HEAD" ? null : new Uint8Array(bytes), {
         status: 200, headers: { "Content-Type": resourceMime(path), "Content-Length": String(bytes.byteLength) },

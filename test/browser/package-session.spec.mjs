@@ -9,7 +9,7 @@ const received = [], stunPackets = [];
 const hostHtml = `<!doctype html><div id="container"></div><script type="module">
 import { prepareSandboxPackage, createSandboxPackageSession } from '/runtime.js';
 window.scopes = new Map(); window.events = []; window.terminated = [];
-window.launch = async (sources, scope = 'a') => {
+window.launch = async (sources, scope = 'a', prepareOptions) => {
   const files = Object.fromEntries(Object.entries(sources).map(([path, source]) => [path, typeof source === 'string' ? new TextEncoder().encode(source) : new Uint8Array(source)]));
   const metadata = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([path, bytes]) => [path, { size: bytes.byteLength, sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('') }])));
   if(window.shareByHash){
@@ -19,7 +19,7 @@ window.launch = async (sources, scope = 'a') => {
     }
     window.sharedInputs=files;
   }
-  const prepared = await prepareSandboxPackage({manifest:{formatVersion:1, entrypoint:'index.html', files:metadata}, files});
+  const prepared = await prepareSandboxPackage({manifest:{formatVersion:1, entrypoint:'index.html', files:metadata}, files}, prepareOptions);
   window.logicalBytes=prepared.totalBytes;
   if (!scopes.has(scope)) scopes.set(scope, new Map());
   const store = scopes.get(scope); // captured scope, never a mutable current-user lookup
@@ -51,10 +51,12 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await new Promise(resolve => server?.close(resolve)); await new Promise(resolve=>udp?.close(resolve)); });
 
-async function open(page, sources, scope = "a") {
+async function open(page, sources, scope = "a", prepareOptions) {
   await page.goto(`${origin}/host`);
   await page.waitForFunction(() => window.hostReady);
-  await page.evaluate(({ sources, scope }) => window.launch(sources, scope), { sources, scope });
+  // Playwright's argument-object decoder drops an own __proto__ key. JSON.parse
+  // preserves that literal path so this exercises SDK/browser transport instead.
+  await page.evaluate(({ sourcesJson, scope, prepareOptions }) => window.launch(JSON.parse(sourcesJson), scope, prepareOptions), { sourcesJson:JSON.stringify(sources), scope, prepareOptions });
   return page.frames().find(frame => frame.parentFrame() === page.mainFrame());
 }
 const png = Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvWQAAAAASUVORK5CYII=", "base64"));
@@ -136,17 +138,82 @@ test("CSS SVG-view fragments remain quoted, parsed and actually rendered", async
   }
 });
 
-test("public browser prepare rejects prototype-chain MIME extensions", async ({ page }) => {
+for(const worker of [false,true]) test(`fallback data survives browser prepare, transfer and child revalidation (host worker=${worker})`, async ({ page }) => {
+  // Observe actual child-created Blobs, not network interception or a simulated loader.
+  await page.addInitScript(() => {
+    const create=URL.createObjectURL.bind(URL);
+    window.createdPackageBlobs=[];
+    URL.createObjectURL=blob=>{createdPackageBlobs.push(blob);return create(blob);};
+  });
+  const paths=["data.data","model.glb","model.gltf","app.wasm","app.exe","nested.zip","template.htm","js","json","dir.js/js","constructor","toString","__proto__","payload.constructor","payload.__proto__"];
+  const bytes=[0xff,0,128,42,17];
+  const frame=await open(page,{
+    "index.html":'<main>data only</main><script type="module">window.initialData=Array.from(new Uint8Array(await(await fetch("app.wasm")).arrayBuffer()));window.knownBlobReads=[Array.from(new Uint8Array(await(await fetch(new URL("./known.bin",import.meta.url))).arrayBuffer())),await(await fetch(new URL("./known.json",import.meta.url))).json(),await(await fetch(new URL("./known.txt",import.meta.url))).text()];</script>',
+    ...Object.fromEntries(paths.map(path=>[path,bytes])),
+    "known.bin":bytes,"known.json":'{"known":true}',"known.txt":"known text",
+  },"a",{worker});
+  const result=await frame.evaluate(async({paths,bytes})=>{
+    const reads=[];
+    for(const path of paths){
+      const response=await fetch(path+"?version=1#part");
+      const head=await fetch(path,{method:"HEAD"});
+      reads.push({path,status:response.status,type:response.headers.get("content-type"),size:response.headers.get("content-length"),bytes:Array.from(new Uint8Array(await response.arrayBuffer())),headType:head.headers.get("content-type"),headSize:head.headers.get("content-length"),headBytes:(await head.arrayBuffer()).byteLength});
+    }
+    const matching=[];
+    for(const blob of createdPackageBlobs) if(blob.size===bytes.length && JSON.stringify(Array.from(new Uint8Array(await blob.arrayBuffer())))===JSON.stringify(bytes)) matching.push(blob.type);
+    const failures=[];
+    for(const init of [{method:"POST"},{signal:AbortSignal.abort()}]){try{await fetch("data.data",init);failures.push("accepted");}catch(error){failures.push(error.name);}}
+    return {reads,matching,initial:initialData,known:[await(await fetch("known.bin")).arrayBuffer().then(b=>Array.from(new Uint8Array(b))),await(await fetch("known.json")).json(),await(await fetch("known.txt")).text()],knownBlobs:knownBlobReads,failures,origin:location.origin,api:Object.keys(game).sort()};
+  },{paths,bytes});
+  assert.deepEqual(result.reads,paths.map(path=>({path,status:200,type:"application/octet-stream",size:String(bytes.length),bytes,headType:"application/octet-stream",headSize:String(bytes.length),headBytes:0})));
+  assert.deepEqual(result.matching,["application/octet-stream"],"only known .bin may become a Blob, not the identical fallback bytes");
+  assert.deepEqual(result.initial,bytes);
+  assert.deepEqual(result.known,[bytes,{known:true},"known text"]);
+  assert.deepEqual(result.knownBlobs,result.known);
+  assert.deepEqual(result.api,["storageDelete","storageGet","storageSet"]);
+  assert.deepEqual(result.failures,["TypeError","AbortError"]);
+  assert.equal(result.origin,"null");
+  assert.deepEqual(await page.evaluate(()=>events),["connected","ready"]);
+});
+
+test("local fetch fails missing prototype keys rather than reading inherited object values",async({page})=>{
+  const frame=await open(page,{"index.html":"<p>no data files</p>"});
+  const result=await frame.evaluate(async()=>{
+    const failures=[];
+    for(const method of ["GET","HEAD"]) for(const path of ["constructor","toString","__proto__"]){
+      try{await fetch(path,{method});failures.push("accepted");}catch(error){failures.push({name:error.name,message:error.message});}
+    }
+    return failures;
+  });
+  assert.equal(result.length,6);
+  for(const error of result){assert.equal(error.name,"TypeError");assert.match(error.message,/Missing offline fetch resource/);}
+});
+
+test("browser main/worker preparation rejects fallback resource uses before creating an iframe",async({page})=>{
   await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
   const result=await page.evaluate(async()=>{
     const codes=[];
-    for(const path of ["payload.constructor","payload.__proto__"]){
-      try {await launch({"index.html":"<p>root</p>",[path]:[]});codes.push("accepted");}
-      catch(error){codes.push(error.code);}
+    for(const worker of [false,true]) for(const path of ["payload.data","js","payload.constructor"]) for(const html of [
+      `<script src="${path}"></script>`,
+      `<script type="module" src="${path}"></script>`,
+      `<script type="module">import "./${path}"</script>`,
+      `<script type="module">import("./${path}")</script>`,
+      `<link rel="stylesheet" href="${path}">`,
+      `<img src="${path}">`,
+      `<style>@import "${path}";</style>`,
+      `<style>body{background:url("${path}")}</style>`,
+      `<style>body{background:image-set("${path}" 1x)}</style>`,
+      `<style>body{background:image-set(url("${path}") 1x)}</style>`,
+      `<script type="module">new URL("./${path}",import.meta.url)</script>`,
+      `<script>new Worker("${path}")</script>`,
+      `<script type="module">new Worker(new URL("./${path}",import.meta.url),{type:"module"})</script>`,
+    ]) {
+      try{await launch({"index.html":html,[path]:[]},"a",{worker});codes.push("accepted");}catch(error){codes.push(error.code);}
     }
     return {codes,frames:document.querySelectorAll("iframe").length};
   });
-  assert.deepEqual(result,{codes:["UNSUPPORTED_FORMAT","UNSUPPORTED_FORMAT"],frames:0});
+  assert.deepEqual(result.codes,Array(2*3*13).fill("UNSUPPORTED_REFERENCE"));
+  assert.equal(result.frames,0);
 });
 
 test("runtime local fetch rejects encoded escapes and accepts Unicode plus valid relative dot paths", async ({ page }) => {
@@ -208,6 +275,38 @@ test("child revalidates shared manifest rules before accepting chunks and still 
     if(scenario==="bytes"){assert.ok(result.chunks>0);assert.match(result.error,/SHA-256 mismatch/);}
     else assert.equal(result.chunks,0,`${scenario} must fail child admission, before allocation/chunk acceptance`);
   }
+});
+
+test("child independently rejects fallback auto-resource references after valid-hash transfer",async({page})=>{
+  await page.goto(`${origin}/host`);await page.waitForFunction(()=>window.hostReady);
+  const result=await page.evaluate(async()=>{
+    const html='<img src="payload.data">';
+    const bytes=new TextEncoder().encode(html);
+    const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+    const Original=window.MessageChannel;
+    window.MessageChannel=class extends Original {
+      constructor(){
+        super();const post=this.port1.postMessage.bind(this.port1);
+        this.port1.postMessage=(message,transfer)=>{
+          if(message?.type==='begin'){
+            message=structuredClone(message);
+            message.manifest.files['index.html'].sha256=hash;
+          }
+          if(message?.type==='chunk'&&message.path==='index.html')message.bytes.set(bytes);
+          return post(message,transfer);
+        };
+      }
+    };
+    let error;
+    // The host prepares valid, same-length root HTML. Only child admission sees
+    // the independently hashed resource reference; it must recompile and reject.
+    try{await launch({'index.html':' '.repeat(bytes.length),'payload.data':[1,2,3]});error='accepted';}
+    catch(reason){error=reason.message;}
+    return {error,frames:document.querySelectorAll('iframe').length,events};
+  });
+  assert.match(result.error,/Fallback data supports package GET\/HEAD only/);
+  assert.equal(result.frames,0);
+  assert.deepEqual(result.events,["connected","ready-error"]);
 });
 
 test("native Blob registry rejects appended query while accepting a fragment", async ({ page }) => {
@@ -408,7 +507,7 @@ test("storage is scoped by host closure, not user input; old session is destroye
 });
 
 test("dynamic external fetch, sockets, images, beacon and workers hit no real HTTP receiver", async ({ page }) => {
-  const frame = await open(page, {"index.html":"<p>offline</p>"});
+  const frame = await open(page, {"index.html":"<p>offline</p>","probe.data":[0xff,0,42]});
   const prefix = `/probe-${Date.now()}`;
   const result = await frame.evaluate(async ({ target }) => {
     const failures=[];
@@ -483,6 +582,7 @@ test("dedicated Blob, classic file and module graph Workers run inside the opaqu
       const c = await request(new Worker(new URL('./workers/module.js', import.meta.url), {type:'module'}), 2);
       window.workerResults = {a,b,c,detached:bytes.byteLength};
     </script>`,
+    "unused-worker.data": "onmessage = e => postMessage(e.data);",
     "workers/classic.js": "onmessage = e => postMessage(e.data * 3);",
     "workers/module.js": "import {base} from './base.js'; const {extra} = await import('./extra.js'); self.onmessage = e => postMessage(base + extra + e.data);",
     "workers/base.js": "export const base = 30;",
@@ -529,17 +629,18 @@ test("Worker admission rejects remote scripts and bounds live direct Workers", a
 });
 
 
-test("embedded WebAssembly runs in document and Blob Worker while JavaScript eval stays blocked", async ({ page }) => {
-  const frame=await open(page,{"index.html":"<p>WASM</p>"});
+test("package WebAssembly data retains document/Blob Worker support while JavaScript eval stays blocked", async ({ page }) => {
   const bytes=[0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,6,1,4,0,65,42,11];
-  const result=await frame.evaluate(async bytes=>{
+  const frame=await open(page,{"index.html":"<p>WASM</p>","module.wasm":bytes});
+  const result=await frame.evaluate(async()=>{
+    const bytes=Array.from(new Uint8Array(await(await fetch("module.wasm")).arrayBuffer()));
     const {instance}=await WebAssembly.instantiate(new Uint8Array(bytes));
     let evalBlocked=false;try { Function('return 1')(); }catch{evalBlocked=true;}
     const source='onmessage=async e=>{const {instance}=await WebAssembly.instantiate(new Uint8Array(e.data)); postMessage(instance.exports.f());}';
     const worker=new Worker(URL.createObjectURL(new Blob([source],{type:'text/javascript'})));
     const workerValue=await new Promise((resolve,reject)=>{worker.onmessage=e=>{worker.terminate();resolve(e.data);};worker.onerror=reject;worker.postMessage(bytes);});
     return {documentValue:instance.exports.f(),workerValue,evalBlocked};
-  },bytes);
+  });
   assert.deepEqual(result,{documentValue:42,workerValue:42,evalBlocked:true});
 });
 

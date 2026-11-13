@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.3.2）
+# 离线作品包运行时（0.3.3）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.3.2"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.3.3"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -39,7 +39,7 @@ await session.ready;     // 接收、重新校验、资源装载及初始脚本�
 session.terminate("player closed");
 ```
 
-`prepareSandboxPackage` 同时支持 Node.js 24+ 与浏览器；使用 parse5、css-tree、Acorn 解析，**不引用浏览器 DOM、不执行作品代码、不访问网络**。它校验根入口、完整文件集、SHA-256、字节长度、路径与支持格式，并复制输入字节，后续修改输入不改变准备结果。返回的 `PreparedSandboxPackage` 是当前 JS realm 中的不可变句柄，不可 JSON 序列化/跨进程复用；服务端准备通过后，player 下载同一包并重新准备。
+`prepareSandboxPackage` 同时支持 Node.js 24+ 与浏览器；使用 parse5、css-tree、Acorn 解析，**不引用浏览器 DOM、不执行作品代码、不访问网络**。它校验根入口、完整文件集、SHA-256、字节长度、路径与已知格式的解析约束，并复制输入字节，后续修改输入不改变准备结果。返回的 `PreparedSandboxPackage` 是当前 JS realm 中的不可变句柄，不可 JSON 序列化/跨进程复用；服务端准备通过后，player 下载同一包并重新准备。
 
 宿主需运行于 http(s) Origin（生产应使用 HTTPS）。普通 bundler 可使用包根入口；无 bundler 的可信 player 可同源托管 `@codemao-pickcat/browser-game-sandbox/package.runtime.js`，它是无外部依赖的 ESM bundle，包含可信 bootstrap 字符串。禁止从作品包中替换此运行时。`game.preload.js` 是旧跨源资源服务入口，离线包不依赖它。
 
@@ -55,9 +55,15 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 - 原有通用 RPC **仍为 64 KiB**，没有为传包调大；30 请求/秒、并发/请求 ID/取消/超时/销毁检查照常生效。
 - 路径为规范的包相对路径，禁止空段、`.`/`..`、前导 `/`、反斜线、控制字符、空白、`% : ? #`。引用允许 `./`、`../`（不得越过包根）及 `/` 包根相对写法；先逐段解码并校验深度，再进行 URL 规范化，编码的 dot 段与 literal dot 段同义，越过包根一律拒绝而非 clamp。正常 Unicode/文件名 URL 编码可用；编码的 slash/backslash、双重编码及非法编码拒绝，query/hash 不参与路径深度判断。
 - 普通静态资源引用允许 query（如 `img.png?v=1`）：查找只使用包路径，物化 Blob 时丢弃 query、保留完整 fragment（包括 fragment 内的 `?`）。不同 query 不代表不同网络资源或缓存版本，字节版本只由 manifest/SHA 决定；ES module 引用仍明确拒绝 query/hash。
-- HTML/CSS/JS/SVG 必须为 UTF-8。二进制文件保证字节完整性及扩展名支持，不承诺解码器能播放任意损坏或浏览器不支持的媒体编码。
+- 已知 HTML/CSS/JS/SVG 必须为 UTF-8，原有解析与错误不降级为数据。二进制文件保证字节完整性，不承诺解码器能播放任意损坏或浏览器不支持的媒体编码。
 
-允许的扩展名：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。只有根 `index.html` 可作为执行入口。其他 `.html`（如 `assets/template.html`）允许作为被动模板数据，仍校验 SHA-256、大小与 UTF-8；仅保留原始字节供包内相对 fetch 读取，不解析/改写模板、不生成 HTML Blob、不插入 DOM，也不提供次级文档或导航入口。`.wasm` 文件、压缩包及未知扩展名拒绝。内嵌在 JavaScript 的 WebAssembly 字节可通过 compile/instantiate 执行，主线程和 Worker 均支持；CSP 只增加 `wasm-unsafe-eval`，不放开 JavaScript eval/Function。ZIP 解包由平台负责，本 API 不解析 ZIP。
+已知扩展名及 MIME 保持不变：`html css js mjs json txt csv xml png jpg jpeg gif webp avif ico svg woff woff2 ttf otf mp3 ogg wav m4a mp4 webm bin`。扩展名只取末段文件名的最后一个实际点号之后的内容，大小写不敏感；目录中的点号不参与。无后缀 `js`、`json` 等不是脚本或 JSON；未知扩展名、无后缀及 `constructor`、`toString`、`__proto__` 等路径作为 fallback 原始数据保留，GET/HEAD MIME 为 `application/octet-stream`。
+
+Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 Blob URL，不可作为 script/module/stylesheet、HTML 资源属性、CSS `url()`/`image-set()`、literal `new URL(..., import.meta.url)` 或自动 Worker 脚本引用；这些用途报 `UNSUPPORTED_REFERENCE`。读取请使用 `fetch("model.glb")`，不要用 literal `new URL` 包装。已知 JSON/TXT/CSV/XML/BIN 等保留已有 Blob、资源引用及 literal `new URL` 兼容行为，不能因为 `.bin` 与 fallback 的 MIME 相同就授予 fallback Blob 资格。
+
+只有根 `index.html` 可作为执行入口。其他 `.html`（如 `assets/template.html`）允许作为被动模板数据，仍校验 SHA-256、大小与 UTF-8；仅保留原始字节供包内相对 fetch 读取，不解析/改写模板、不生成 HTML Blob、不插入 DOM，也不提供次级文档或导航入口。ZIP 解包由平台负责，本 API 不解析 ZIP，也不递归解包嵌套压缩文件；ZIP 内 `.htm` 为 fallback 数据，平台将单文件 HTM 封装成 `index.html` 的语义不变。
+
+只读数据描述 SDK 自动装载行为，不是安全边界：作品仍可自行解释字节、构造 Blob，或在已有策略内将 WebAssembly 字节交给 compile/instantiate；主线程及 Worker 的既有 WASM 支持保留，CSP 的 `wasm-unsafe-eval` 不变，JavaScript eval/Function 仍不放开。文件类型放宽不增加执行器、导航、下载、联网或宿主调用权限。
 
 ## 支持矩阵
 
@@ -68,12 +74,12 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 | 静态 `script src`、inline script | 支持；在完整 DOM 装载后按文档顺序执行；`async/defer` 归一为顺序执行 |
 | `type="module"`（外部/内联） | 支持，含静态 import/export、循环引用、top-level await |
 | `import("./literal.js")` | 支持；非 literal 动态 import、bare specifier、import attributes/JSON modules、module query/hash 变体明确拒绝 |
-| `new URL("./asset", import.meta.url)` | 支持非 HTML literal 资源，重写为子文档创建的 Blob URL；动态参数与 HTML Blob 资源明确拒绝，HTML 模板请使用包内相对 fetch |
+| `new URL("./asset", import.meta.url)` | 支持已知非 HTML literal 资源（含原有 JSON/TXT/BIN），重写为子文档创建的 Blob URL；动态参数、HTML 与 fallback Blob 资源明确拒绝，后两者请使用包内相对 fetch |
 | stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL，通过 CSS 字符串序列化保留引用和转义，包括 `#svgView(viewBox(...))` 等带括号 fragment；CSS Blob 依赖环拒绝 |
-| 图片、字体、音频、视频的静态资源引用 | 支持包内文件；HTML `srcset/imagesrcset` 暂不支持，明确拒绝 |
+| 图片、字体、音频、视频的静态资源引用 | 支持已知非 HTML 资源，fallback 数据不得作为自动资源引用；HTML `srcset/imagesrcset` 暂不支持，明确拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG；不支持 style、foreignObject、image/use 等嵌入形式 |
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
-| `fetch("data.json")`、运行时计算包内相对路径 | 本地兼容层提供 GET/HEAD，返回原始包字节；query/hash 不改变读取的文件或字节，带 query 的 HTML 模板也一样；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
+| `fetch("data.json")`、`fetch("model.glb")`、运行时计算包内相对路径 | 本地兼容层从完整文件集提供 GET/HEAD，返回原始包字节；HEAD 保留 MIME/字节长度且无响应体，fallback MIME 为 `application/octet-stream`。query/hash 不改变读取的文件或字节；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
 | `fetch(new URL("./data.json", import.meta.url))` | 支持重写后的本地 Blob 对应原始字节；不存在的文件/外部 URL/非 GET-HEAD 明确 TypeError，无网络回退 |
 | `window.game.storageGet/Set/Delete` | 提供 adapter 时支持，严格对象 schema；不提供 adapter 时不暴露存储方法 |
 | fragment anchor | 支持；其他静态链接导航拒绝 |
@@ -86,7 +92,7 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。
 
-不支持任意 ZIP 透明兼容。`SandboxPackageError.code` 区分 `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_FORMAT`、缺失资源、HTML/CSS/JS/模块不兼容、资源环等错误；错误消息标明对应文件或模式。动态不支持的操作通过 TypeError、模块执行拒绝、资源 error 或 CSP 报告显式失败。准备成功不等于所有用户代码一定能成功运行；运行初始化失败会拒绝 `ready` 并销毁会话，不会 fake-ready。
+不支持任意 ZIP 透明兼容。`SandboxPackageError.code` 区分 `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`、缺失资源、HTML/CSS/JS/模块不兼容、资源环等错误；错误消息标明对应文件或模式。动态不支持的操作通过 TypeError、模块执行拒绝、资源 error 或 CSP 报告显式失败。准备成功不等于所有用户代码一定能成功运行；运行初始化失败会拒绝 `ready` 并销毁会话，不会 fake-ready。
 
 ## 浏览器加载响应
 
@@ -118,9 +124,9 @@ Adapter 的方法在会话创建时绑定，必须由宿主闭包绑定**固定�
 
 ## 隔离与清理
 
-iframe 只启用 `allow-scripts`，不带 `allow-same-origin`；精确验证 `contentWindow`、`origin === "null"`、256-bit 一次性 token。子端核对实际父窗口、确切可信父 Origin 和 token，仅接受一次单端口 init。包传输与 RPC 使用不同 MessagePort，后者复用原 Host 安全机制；包不会混入普通 RPC 消息预算。用户脚本在认证、收齐/复核所有字节、创建全部 Blob 与 import map 之后才执行。没有父 Origin Blob 可供不透明子文档直接取用的假设。
+iframe 只启用 `allow-scripts`，不带 `allow-same-origin`；精确验证 `contentWindow`、`origin === "null"`、256-bit 一次性 token。子端核对实际父窗口、确切可信父 Origin 和 token，仅接受一次单端口 init。包传输与 RPC 使用不同 MessagePort，后者复用原 Host 安全机制；包不会混入普通 RPC 消息预算。用户脚本在认证、收齐/复核所有字节、创建已知可物化资源的 Blob 与 import map 之后才执行；fallback 不进入 Blob 计划，但仍计入全部路径、数量、字节、SHA-256 和传输校验。没有父 Origin Blob 可供不透明子文档直接取用的假设。
 
-Node/browser prepare 与子端接收前共享同一纯 manifest 元数据 validator（版本、根入口、路径、文件数、SHA 字符串格式与大小预算），但子端收齐后仍独立复核文件实际字节的 SHA-256 与格式，不以宿主检查替代子端验证。MIME 查表仅接受 allowlist 自有键，未知扩展名不能通过 Object 原型链别名进入。
+Node/browser prepare 与子端接收前共享同一纯 manifest 元数据 validator（版本、根入口、路径、文件数、SHA 字符串格式与大小预算），但子端收齐后仍独立复核文件实际字节的 SHA-256 与格式，不以宿主检查替代子端验证。MIME 已知识别仅接受表的自有键，未知扩展名不能通过 Object 原型链别名进入已知格式；manifest 不增加 MIME/类别/权限字段。包内 fetch 也仅查询文件集自有键，存在的原型键名路径可读，缺失的 `constructor` 等路径必须失败，没有网络回退。
 
 包通道逐块确认并有独立预算/超时；ready 后关闭包通道。终止关闭端口、取消 Host 请求、移除监听器与 iframe，拒绝未完成 connected/ready，丢弃传输缓冲；子文档 pagehide/装载失败终止直接创建的 Worker 并撤销其 Blob URL。准备句柄本身可由调用者保留复用，它持有的已验证字节直到调用者释放该句柄才可回收。
 
@@ -139,4 +145,4 @@ npm run test:browser
 npx playwright test -c test/browser-edge.config.mjs test/browser/package-session.spec.mjs
 ```
 
-浏览器测试使用真实本地 HTTP 接收端观测网络，不使用 route interception 伪装拒绝；另测不透明 Origin/握手伪造、单次端口、包内资源、ESM 环/TLA、存储作用域、取消清理与初始化失败。字体 fixture 为 ABeeZee（OFL，见同目录许可证）。这些测试不构成对所有浏览器所有出口的证明。
+浏览器测试使用真实本地 HTTP 接收端观测网络，不使用 route interception 伪装拒绝；另测不透明 Origin/握手伪造、单次端口、包内资源、fallback GET/HEAD 精确字节及无自动 Blob、引用拒绝、Node/browser/准备 Worker/子端一致性、ESM 环/TLA、独立 Worker/WASM、存储作用域、取消清理与初始化失败。字体 fixture 为 ABeeZee（OFL，见同目录许可证）。这些测试不构成对所有浏览器所有出口的证明。

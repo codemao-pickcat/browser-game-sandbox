@@ -4,7 +4,7 @@ import { parse as parseJs, type Node } from "acorn";
 import { simple } from "acorn-walk";
 import {
   SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION,
-  moduleSpecifier, packageError, resolvePackageReference, resourceMime, validatePackageManifest,
+  moduleSpecifier, packageError, resolvePackageReference, knownResourceMime, validatePackageManifest,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
 } from "./package-format.js";
@@ -75,7 +75,8 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
     if (value.startsWith("#") && kind === "asset") return value;
     const resolved = resolvePackageReference(value, from);
     if (!Object.hasOwn(files, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
-    const mime = resourceMime(resolved.path);
+    const mime = knownResourceMime(resolved.path);
+    if (mime === undefined && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", `Fallback data supports package GET/HEAD only, not ${kind} references: ${value}`);
     if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML is passive fetch data only; HTML assets, subdocuments and navigation are unsupported");
     if ((kind === "module" || kind === "script" || kind === "worker") && mime !== "text/javascript") packageError("UNSUPPORTED_REFERENCE", `Script must be .js or .mjs: ${value}`);
     if (kind === "css" && mime !== "text/css") packageError("UNSUPPORTED_REFERENCE", `Stylesheet must be .css: ${value}`);
@@ -268,7 +269,10 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>): Pac
   // Parse every JS as a module (a superset of most classic sources); script-tag
   // classic mode is checked separately by the browser. All imports are mapped.
   for (const path of Object.keys(files)) {
-    const mime = resourceMime(path);
+    const mime = knownResourceMime(path);
+    // Fallback data has no automatic Blob. Known .bin keeps its existing Blob
+    // behavior despite sharing application/octet-stream with fallback files.
+    if (mime === undefined) continue;
     if (mime === "text/html") {
       // Only root index.html is compiled above. Secondary HTML is verified
       // UTF-8 data for local fetch, not parsed, rewritten or made into a Blob.

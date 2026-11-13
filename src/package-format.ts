@@ -1,4 +1,4 @@
-export const SANDBOX_RUNTIME_VERSION = "0.3.2" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.3.3" as const;
 
 export interface SandboxPackageManifest {
   readonly formatVersion: 1;
@@ -64,7 +64,6 @@ export function validatePackageManifest(value: unknown): {
   let totalBytes = 0;
   for (const [path, value] of entries) {
     assertPackagePath(path);
-    resourceMime(path);
     if (!value || typeof value !== "object" || Array.isArray(value)) packageError("INVALID_MANIFEST", `Invalid size or SHA-256: ${path}`);
     const metadata = value as Record<string, unknown>;
     const size = metadata.size, sha256 = metadata.sha256;
@@ -131,7 +130,7 @@ export interface CompiledResource {
   readonly parts: readonly ResourcePart[] | null;
 }
 export interface PackagePlan {
-  /** Non-HTML Blob assets only; HTML template bytes remain in snapshot.files. */
+  /** Known non-HTML Blob assets only; HTML and fallback data stay in snapshot.files. */
   readonly resources: readonly CompiledResource[];
   readonly workers: readonly CompiledResource[];
   /** The sole executable document, compiled from root index.html. */
@@ -157,8 +156,14 @@ export const MIME_TYPES: Readonly<Record<string, string>> = Object.freeze({
   mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", m4a: "audio/mp4",
   mp4: "video/mp4", webm: "video/webm", bin: "application/octet-stream",
 });
+/** Internal recognition, not byte admission. Undefined means fetch-only fallback data. */
+export function knownResourceMime(path: string): string | undefined {
+  const filename = path.slice(path.lastIndexOf("/") + 1);
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  const extension = filename.slice(dot + 1).toLowerCase();
+  return Object.hasOwn(MIME_TYPES, extension) ? MIME_TYPES[extension] : undefined;
+}
 export function resourceMime(path: string): string {
-  const extension = path.split(".").pop()!.toLowerCase();
-  if (!Object.hasOwn(MIME_TYPES, extension)) return packageError("UNSUPPORTED_FORMAT", `Unsupported file extension: ${path}`);
-  return MIME_TYPES[extension]!;
+  return knownResourceMime(path) ?? "application/octet-stream";
 }

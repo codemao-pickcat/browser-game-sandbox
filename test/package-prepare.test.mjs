@@ -34,7 +34,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.3.2");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.3.3");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -157,16 +157,68 @@ for (const [name, sources, code] of [
   ["module syntax", { "index.html": '<script type="module">export ???</script>' }, "INVALID_JAVASCRIPT"],
   ["CSS cycle", { "index.html": '<link rel="stylesheet" href="a.css">', "a.css": '@import "./b.css";', "b.css": '@import "./a.css";' }, "RESOURCE_CYCLE"],
   ["scripted SVG", { "index.html": '<img src="x.svg">', "x.svg": '<svg><script>alert(1)</script></svg>' }, "UNSUPPORTED_SVG"],
-  ["unsupported file", { "index.html": "ok", "app.wasm": new Uint8Array() }, "UNSUPPORTED_FORMAT"],
 ]) test(`rejects unsupported format: ${name}`, async () => {
   await assert.rejects(prepareSandboxPackage(await input(sources)), error => error.code === code);
 });
 
-for (const path of ["payload.constructor", "payload.__proto__"]) {
-  test(`public prepare rejects prototype-chain MIME extension ${path}`, async () => {
-    await assert.rejects(prepareSandboxPackage(await input({"index.html":"<p>root</p>",[path]:new Uint8Array()})),error=>error.code==="UNSUPPORTED_FORMAT");
+test("fallback files keep exact verified bytes but never enter the automatic Blob plan", async () => {
+  const paths=["data.data","model.glb","model.gltf","app.wasm","app.exe","nested.zip","template.htm","js","json","css","html","svg","dir.js/js","dir.json/json","data.","constructor","toString","__proto__","payload.constructor","payload.__proto__"];
+  const bytes=new Uint8Array([0xff,0,1,128,42]); // Must not be parsed as text, scripts or HTML.
+  const value=await input({"index.html":'<script>fetch("app.wasm");fetch("js");fetch("constructor")</script>',...Object.fromEntries(paths.map(path=>[path,bytes]))});
+  const prepared=await prepareSandboxPackage(value);
+  const snapshot=snapshotPreparedPackage(prepared);
+  assert.equal(snapshot.plan.resources.length,0);
+  assert.equal(snapshot.plan.workers.length,0);
+  for(const path of paths) { assert.ok(Object.hasOwn(snapshot.files,path));assert.deepEqual(snapshot.files[path],bytes); }
+  assert.equal(prepared.totalBytes,Object.values(value.files).reduce((sum,bytes)=>sum+bytes.byteLength,0));
+  for(const mutate of [
+    v=>{v.manifest.files["app.wasm"].sha256="0".repeat(64);},
+    v=>{v.manifest.files["app.wasm"].size++;},
+    v=>{delete v.files["app.wasm"];},
+    v=>{v.files["extra.data"]=new Uint8Array();},
+    v=>{v.manifest.files["app.wasm"].size=SANDBOX_PACKAGE_LIMITS.fileBytes+1;},
+  ]) { const changed=structuredClone(value);mutate(changed);await assert.rejects(prepareSandboxPackage(changed)); }
+});
+
+test("known JSON/TXT/BIN and other passive formats retain their existing Blob/reference compatibility", async () => {
+  const paths=["data.json","data.txt","data.csv","data.xml","data.bin"];
+  const html='<script type="module">'+paths.map(path=>`new URL("./${path}",import.meta.url);`).join("")+'</script>'+paths.map(path=>`<img src="${path}">`).join("")+`<style>body{${paths.map((path,i)=>`--asset${i}:url("${path}");`).join("")}}</style>`;
+  const prepared=await prepareSandboxPackage(await input({"index.html":html,...Object.fromEntries(paths.map(path=>[path,new Uint8Array([0xff,0,42])]))}));
+  const snapshot=snapshotPreparedPackage(prepared);
+  assert.deepEqual(snapshot.plan.resources.map(r=>r.path),paths);
+  assert.ok(snapshot.plan.resources.every(r=>r.parts===null));
+  assert.equal(snapshot.plan.resources.find(r=>r.path==="data.bin").mime,"application/octet-stream");
+});
+
+for(const path of ["data.data","model.glb","app.wasm","template.htm","js","json","dir.js/js","payload.constructor","constructor","__proto__"]){
+  for(const [kind,html] of [
+    ["classic script",`<script src="${path}"></script>`],
+    ["module src",`<script type="module" src="${path}"></script>`],
+    ["module import",`<script type="module">import "./${path}"</script>`],
+    ["dynamic import",`<script type="module">import("./${path}")</script>`],
+    ["stylesheet",`<link rel="stylesheet" href="${path}">`],
+    ["CSS import",`<style>@import "${path}";</style>`],
+    ["HTML attribute",`<img src="${path}">`],
+    ["CSS url",`<style>body{background:url("${path}")}</style>`],
+    ["CSS image-set string",`<style>body{background:image-set("${path}" 1x)}</style>`],
+    ["CSS image-set URL",`<style>body{background:image-set(url("${path}") 1x)}</style>`],
+    ["literal URL",`<script type="module">new URL("./${path}",import.meta.url)</script>`],
+    ["Worker",`<script>new Worker("${path}")</script>`],
+    ["Worker URL",`<script type="module">new Worker(new URL("./${path}",import.meta.url),{type:"module"})</script>`],
+  ]) test(`fallback ${path} rejects unsupported reference use: ${kind}`,async()=>{
+    await assert.rejects(prepareSandboxPackage(await input({"index.html":html,[path]:""})),error=>error.code==="UNSUPPORTED_REFERENCE");
   });
 }
+
+for(const [path,source,code] of [
+  ["bad.JS","export ???","INVALID_JAVASCRIPT"],
+  ["bad.MJS","export ???","INVALID_JAVASCRIPT"],
+  ["bad.CSS","body{color:!important !important}","INVALID_CSS"],
+  ["bad.SVG","<svg><script>execute()</script></svg>","UNSUPPORTED_SVG"],
+  ["bad.HTML",new Uint8Array([0xff]),"INVALID_ENCODING"],
+]) test(`known parser failures do not downgrade to fallback: ${path}`,async()=>{
+  await assert.rejects(prepareSandboxPackage(await input({"index.html":"<p>root</p>",[path]:source})),error=>error.code===code);
+});
 
 test("prepare rejects encoded over-root references instead of aliasing root resources", async () => {
   for (const html of ['<script src="%2e%2e/secret.js"></script>', '<script>fetch(".%2E/data.txt")</script>', '<style>body{background:url("%2E%2e/image.png")}</style>']) {

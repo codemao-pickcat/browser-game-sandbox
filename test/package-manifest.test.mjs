@@ -20,6 +20,17 @@ test("shared manifest validator snapshots metadata and charges each logical path
   assert.equal("validatePackageManifest" in publicApi,false,"metadata seam must remain private to the runtime");
 });
 
+test("manifest admits fallback data and prototype-named paths without changing metadata or budgets", () => {
+  const paths=["index.html","js","json","dir.js/data","model.glb","model.gltf","app.wasm","app.exe","nested.zip","template.htm","constructor","toString","__proto__","payload.constructor"];
+  const value={formatVersion:1,entrypoint:"index.html",files:Object.fromEntries(paths.map(path=>[path,metadata(3)]))};
+  const checked=validatePackageManifest(value);
+  assert.deepEqual(checked.paths,paths);
+  assert.equal(checked.totalBytes,paths.length*3);
+  assert.equal(Object.getPrototypeOf(checked.manifest.files),null);
+  for(const path of paths) assert.deepEqual(checked.manifest.files[path],metadata(3));
+  assert.equal("knownResourceMime" in publicApi,false,"classification must stay internal, not a new public policy");
+});
+
 for (const [name, mutate, code] of [
   ["format version",m=>{m.formatVersion=2;},"INVALID_MANIFEST"],
   ["entrypoint",m=>{m.entrypoint="other.html";},"INVALID_MANIFEST"],
