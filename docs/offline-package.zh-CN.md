@@ -20,7 +20,13 @@ import {
 //   files: { "index.html": { sha256: "64位小写十六进制", size: 123 }, ... }
 // }
 // input.files = { "index.html": Uint8Array, ... }
-const prepared = await prepareSandboxPackage(input satisfies SandboxPackageInput);
+// 浏览器预览建议使用 Worker 解析，并在离开页面时取消。
+// Node 部署校验继续使用不带 options 的调用。
+const controller = new AbortController();
+const prepared = await prepareSandboxPackage(input satisfies SandboxPackageInput, {
+  worker: true,
+  signal: controller.signal,
+});
 const session = createSandboxPackageSession({
   container,
   package: prepared,
@@ -81,6 +87,12 @@ Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。
 
 不支持任意 ZIP 透明兼容。`SandboxPackageError.code` 区分 `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_FORMAT`、缺失资源、HTML/CSS/JS/模块不兼容、资源环等错误；错误消息标明对应文件或模式。动态不支持的操作通过 TypeError、模块执行拒绝、资源 error 或 CSP 报告显式失败。准备成功不等于所有用户代码一定能成功运行；运行初始化失败会拒绝 `ready` 并销毁会话，不会 fake-ready。
+
+## 浏览器加载响应
+
+`worker: true` 将 HTML、CSS、JS 解析交给 SDK 私有 Blob Worker；异步 SHA-256 校验保留在调用端，兼容不提供 SubtleCrypto 的 opaque Blob Worker。宿主 CSP 需允许 `worker-src blob:`。传入的文件字节不会被 detach，返回值仍是当前 realm 内的不可伪造句柄；不提供跨 realm 导入任意编译计划的接口。
+
+`signal` 取消时会终止准备 Worker 并回收 Blob URL。SDK 子文档的二次校验也使用 Worker；作品代码的初始化和渲染仍由浏览器执行，不承诺任意作品的 CPU 或内存硬隔离。`ready` 仍表示初始模块执行完成。
 
 ## 存储
 

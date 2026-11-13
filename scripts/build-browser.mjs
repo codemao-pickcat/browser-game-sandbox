@@ -1,8 +1,15 @@
 import { build } from "esbuild";
 import { writeFile } from "node:fs/promises";
 
+const preparation = await build({
+  entryPoints: ["src/package-prepare-worker.ts"], bundle: true, format: "iife",
+  platform: "browser", target: ["es2022"], minify: true, legalComments: "none", write: false,
+});
+await writeFile("dist/package-prepare-worker-source.js", `export const PACKAGE_PREPARE_WORKER_SOURCE = ${JSON.stringify(preparation.outputFiles[0].text)};\n`);
+await writeFile("dist/package-prepare-worker-source.d.ts", "export declare const PACKAGE_PREPARE_WORKER_SOURCE: string;\n");
+
 const bootstrap = await build({
-  entryPoints: ["src/package-bootstrap.ts"], bundle: true, format: "iife",
+  entryPoints: ["dist/package-bootstrap.js"], bundle: true, format: "iife",
   globalName: "SandboxPackageBootstrap", platform: "browser", target: ["es2022"],
   minify: true, legalComments: "none", write: false,
 });

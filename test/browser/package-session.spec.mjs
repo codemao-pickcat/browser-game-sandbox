@@ -494,9 +494,9 @@ test("dedicated Blob, classic file and module graph Workers run inside the opaqu
 
 test("Blob Workers inherit network restrictions and are closed with the session", async ({ page }) => {
   const observedWorkers = [];
-  page.on('worker', worker => observedWorkers.push(worker));
   const target = `${origin}/worker-network-probe`;
   const frame = await open(page, {"index.html": `<p>Worker host</p>`});
+  page.on('worker', worker => observedWorkers.push(worker));
   const source = `onmessage = async () => { let blocked = false; try { await fetch(${JSON.stringify(target)}); } catch { blocked = true; } postMessage({blocked}); };`;
   const result = await frame.evaluate(async source => {
     const url = URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
@@ -541,4 +541,56 @@ test("embedded WebAssembly runs in document and Blob Worker while JavaScript eva
     return {documentValue:instance.exports.f(),workerValue,evalBlocked};
   },bytes);
   assert.deepEqual(result,{documentValue:42,workerValue:42,evalBlocked:true});
+});
+
+
+test("worker preparation keeps the host responsive, preserves caller bytes and rejects invalid packages", async ({ page }) => {
+  await page.goto(`${origin}/host`);
+  await page.waitForFunction(() => window.hostReady);
+  const result = await page.evaluate(async () => {
+    const { prepareSandboxPackage } = await import('/runtime.js');
+    const bytes = new TextEncoder().encode('<!doctype html><script>const packed="' + 'x'.repeat(8 * 1024 * 1024) + '";</script>');
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    const input = {manifest:{formatVersion:1,entrypoint:'index.html',files:{'index.html':{sha256:hash,size:bytes.length}}},files:{'index.html':bytes}};
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 5);
+    const prepared = await prepareSandboxPackage(input, { worker: true });
+    clearInterval(timer);
+    let invalid;
+    try { await prepareSandboxPackage({...input, files:{'index.html':new Uint8Array(bytes.length)}}, {worker:true}); }
+    catch(error) { invalid = error.code; }
+    return {ticks, total:prepared.totalBytes, original:bytes.byteLength, invalid};
+  });
+  expect(result.ticks).toBeGreaterThan(2);
+  expect(result.total).toBe(result.original);
+  expect(result.invalid).toBe('INTEGRITY');
+});
+
+test("aborting worker preparation terminates the owned worker and revokes its Blob URL", async ({ page }) => {
+  await page.goto(`${origin}/host`);
+  await page.waitForFunction(() => window.hostReady);
+  const result = await page.evaluate(async () => {
+    const { prepareSandboxPackage } = await import('/runtime.js');
+    const bytes = new TextEncoder().encode('<!doctype html><script>const packed="' + 'x'.repeat(8 * 1024 * 1024) + '";</script>');
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    const controller = new AbortController();
+    const NativeWorker = window.Worker;
+    const revoke = URL.revokeObjectURL.bind(URL);
+    let terminated=0, revoked=0;
+    window.Worker = class extends NativeWorker {
+      constructor(...args) { super(...args); setTimeout(() => controller.abort(new DOMException('Navigation cancelled', 'AbortError')), 0); }
+      terminate() { terminated++; super.terminate(); }
+    };
+    URL.revokeObjectURL = url => { revoked++; revoke(url); };
+    let code;
+    try {
+      await prepareSandboxPackage({manifest:{formatVersion:1,entrypoint:'index.html',files:{'index.html':{sha256:hash,size:bytes.length}}},files:{'index.html':bytes}}, {worker:true,signal:controller.signal});
+    } catch(error) { code = error.name; }
+    finally { window.Worker=NativeWorker; URL.revokeObjectURL=revoke; }
+    return {code,terminated,revoked,original:bytes.byteLength};
+  });
+  expect(result.code).toBe('AbortError');
+  expect(result.terminated).toBe(1);
+  expect(result.revoked).toBe(1);
+  expect(result.original).toBeGreaterThan(8*1024*1024);
 });
