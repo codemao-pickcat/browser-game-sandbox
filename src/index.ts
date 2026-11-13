@@ -12,6 +12,6 @@ export * from "./plugin.js";
 export * from "./package-policy.js";
 export * from "./protocol.js";
 export * from "./transport.js";
-export { prepareSandboxPackage, type PreparedSandboxPackage, type SandboxPackageInput, type SandboxPackageManifest, SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError } from "./package-prepare.js";
+export { prepareSandboxPackage, type PreparedSandboxPackage, type PrepareSandboxPackageOptions, type SandboxPackageInput, type SandboxPackageManifest, SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError } from "./package-prepare.js";
 export { createSandboxPackageSession, type SandboxPackageSession, type SandboxPackageSessionOptions } from "./package-session.js";
 export { type SandboxStorageAdapter, SANDBOX_STORAGE_LIMITS } from "./package-storage.js";

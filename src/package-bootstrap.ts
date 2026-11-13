@@ -72,7 +72,7 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
           control.onmessage = null;
           void (async () => {
             try {
-              const prepared = await prepareSandboxPackage(input);
+              const prepared = await prepareSandboxPackage(input, { worker: true });
               await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods);
               files = Object.create(null);
               clearTimeout(timer);
