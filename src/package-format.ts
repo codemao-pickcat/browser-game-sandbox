@@ -1,4 +1,4 @@
-export const SANDBOX_RUNTIME_VERSION = "0.3.1" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.3.2" as const;
 
 export interface SandboxPackageManifest {
   readonly formatVersion: 1;

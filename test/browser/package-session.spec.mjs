@@ -527,3 +527,18 @@ test("Worker admission rejects remote scripts and bounds live direct Workers", a
   });
   assert.deepEqual(result,{remoteBlocked:true,limitBlocked:true});
 });
+
+
+test("embedded WebAssembly runs in document and Blob Worker while JavaScript eval stays blocked", async ({ page }) => {
+  const frame=await open(page,{"index.html":"<p>WASM</p>"});
+  const bytes=[0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,6,1,4,0,65,42,11];
+  const result=await frame.evaluate(async bytes=>{
+    const {instance}=await WebAssembly.instantiate(new Uint8Array(bytes));
+    let evalBlocked=false;try { Function('return 1')(); }catch{evalBlocked=true;}
+    const source='onmessage=async e=>{const {instance}=await WebAssembly.instantiate(new Uint8Array(e.data)); postMessage(instance.exports.f());}';
+    const worker=new Worker(URL.createObjectURL(new Blob([source],{type:'text/javascript'})));
+    const workerValue=await new Promise((resolve,reject)=>{worker.onmessage=e=>{worker.terminate();resolve(e.data);};worker.onerror=reject;worker.postMessage(bytes);});
+    return {documentValue:instance.exports.f(),workerValue,evalBlocked};
+  },bytes);
+  assert.deepEqual(result,{documentValue:42,workerValue:42,evalBlocked:true});
+});

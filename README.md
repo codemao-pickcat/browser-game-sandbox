@@ -22,7 +22,7 @@ The browser suite requires Chromium once:
 npx playwright install chromium
 ```
 
-## Offline package entry (0.3.1)
+## Offline package entry (0.3.2)
 
 ```ts
 import { prepareSandboxPackage, createSandboxPackageSession } from "@codemao-pickcat/browser-game-sandbox";

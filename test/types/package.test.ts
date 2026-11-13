@@ -7,7 +7,7 @@ import {
 const manifest: SandboxPackageManifest = { formatVersion: 1, entrypoint: "index.html", files: { "index.html": { sha256: "0".repeat(64), size: 1 } } };
 const input: SandboxPackageInput = { manifest, files: { "index.html": new Uint8Array([1]) } };
 const prepared: Promise<PreparedSandboxPackage> = prepareSandboxPackage(input);
-const version: "0.3.1" = SANDBOX_RUNTIME_VERSION;
+const version: "0.3.2" = SANDBOX_RUNTIME_VERSION;
 const storage: SandboxStorageAdapter = { async get(_key) { return null; }, async set(_key, _value) {}, async delete(_key) {} };
 async function session(container: HTMLElement): Promise<SandboxPackageSession> {
   const result = createSandboxPackageSession({ container, package: await prepared, storage, onTerminate: (_reason: string) => {} });
