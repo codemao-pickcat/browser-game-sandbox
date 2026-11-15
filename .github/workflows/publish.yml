@@ -1,6 +1,16 @@
 name: Publish sandbox release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version in package.json, without v (for example, 0.5.1)"
+        required: true
+        type: string
+      release_notes:
+        description: "Release notes (Markdown)"
+        required: true
+        type: string
   workflow_run:
     workflows: ["CI"]
     types:
@@ -9,18 +19,24 @@ on:
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.event.workflow_run.head_branch }}
+  EXPECTED_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+
 concurrency:
-  group: publish-${{ github.event.workflow_run.head_branch }}
+  group: publish-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
-    name: Test and publish GitHub npm package
+      startsWith(github.event.workflow_run.head_branch, 'v'))
+    name: Test and build npm tarball
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
@@ -29,34 +45,44 @@ jobs:
     defaults:
       run:
         shell: bash
-    permissions:
-      contents: read
-      packages: write
     outputs:
       package_artifact_id: ${{ steps.package_artifact.outputs.artifact-id }}
     env:
-      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
-      EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
       PLAYWRIGHT_IMAGE_VERSION: "1.64.1"
     steps:
+      - name: Validate release inputs
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Use an X.Y.Z version (without v in the manual form), or an existing vX.Y.Z tag"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && ! "$RELEASE_NOTES" =~ [^[:space:]] ]]; then
+            echo "::error::Release notes are required"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ env.EXPECTED_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate release tag
-        shell: bash
+      - name: Check tag availability
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Release must use an existing vX.Y.Z tag"
-            exit 1
-          fi
-          tag_sha="$(git -c "safe.directory=$GITHUB_WORKSPACE" rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
-          if [[ "$tag_sha" != "$EXPECTED_SHA" ]]; then
-            echo "::error::Release tag does not match the successful CI commit"
+          tag_ref="refs/tags/$RELEASE_TAG"
+          if git -c "safe.directory=$GITHUB_WORKSPACE" show-ref --verify --quiet "$tag_ref"; then
+            tag_sha="$(git -c "safe.directory=$GITHUB_WORKSPACE" rev-parse --verify "$tag_ref^{commit}")"
+            if [[ "$tag_sha" != "$EXPECTED_SHA" ]]; then
+              echo "::error::$RELEASE_TAG already points to a different commit"
+              exit 1
+            fi
+          elif [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            echo "::error::$RELEASE_TAG was not found"
             exit 1
           fi
 
@@ -64,8 +90,17 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://npm.pkg.github.com
           cache: npm
+
+      - name: Verify SDK version
+        run: |
+          set -euo pipefail
+          requested_version="${RELEASE_TAG#v}"
+          sdk_version="$(node -p 'require("./package.json").version')"
+          if [[ "$sdk_version" != "$requested_version" ]]; then
+            echo "::error::Requested version $requested_version differs from SDK version $sdk_version. Bump the SDK in MOSS and sync the source before releasing."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -95,20 +130,6 @@ jobs:
       - name: Run complete test suite
         run: npm run test:all
 
-      - name: Synchronize package version with tag
-        shell: bash
-        run: |
-          tag="${RELEASE_TAG}"
-          version="${tag#v}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag must match v*.*.*: $tag"
-            exit 1
-          fi
-          current_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
-          if [[ "$current_version" != "$version" ]]; then
-            npm version "$version" --no-git-tag-version
-          fi
-
       - name: Verify published package contents
         shell: bash
         run: npm run check:package
@@ -124,7 +145,78 @@ jobs:
           path: artifacts/*.tgz
           if-no-files-found: error
 
+  tag:
+    name: Prepare release tag
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release commit and tags
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          fetch-depth: 0
+
+      - name: Create or verify release tag
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/$RELEASE_TAG"
+          if git show-ref --verify --quiet "$tag_ref"; then
+            if [[ "$(git rev-parse --verify "$tag_ref^{commit}")" != "$EXPECTED_SHA" ]]; then
+              echo "::error::$RELEASE_TAG already points to a different commit"
+              exit 1
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+              expected_notes="$(printf '%s' "$RELEASE_NOTES")"
+              tag_notes="$(git for-each-ref --format='%(contents)' "$tag_ref")"
+              if [[ "$(git cat-file -t "$tag_ref")" != tag || "$tag_notes" != "$expected_notes" ]]; then
+                echo "::error::$RELEASE_TAG already exists with different release notes"
+                exit 1
+              fi
+            fi
+            exit 0
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            echo "::error::$RELEASE_TAG was not found"
+            exit 1
+          fi
+          printf '%s\n' "$RELEASE_NOTES" | git \
+            -c 'user.name=github-actions[bot]' \
+            -c 'user.email=41898282+github-actions[bot]@users.noreply.github.com' \
+            -c tag.gpgSign=false \
+            tag --annotate --cleanup=verbatim --file=- "$RELEASE_TAG" "$EXPECTED_SHA"
+          git push --no-follow-tags origin "$tag_ref"
+
+  publish:
+    name: Publish npm tarball
+    needs: [build, tag]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download npm tarball
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.package_artifact_id }}
+          path: artifacts
+
+      - name: Set up Node.js and GitHub Packages
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          package-manager-cache: false
+
       - name: Publish to GitHub Packages
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -150,14 +242,11 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: publish
+    needs: [build, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
-    env:
-      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
-      EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Check out tag
         uses: actions/checkout@v6
@@ -168,7 +257,7 @@ jobs:
       - name: Download published npm tarball
         uses: actions/download-artifact@v8
         with:
-          artifact-ids: ${{ needs.publish.outputs.package_artifact_id }}
+          artifact-ids: ${{ needs.build.outputs.package_artifact_id }}
           path: artifacts
 
       - name: Publish release notes and npm tarball
