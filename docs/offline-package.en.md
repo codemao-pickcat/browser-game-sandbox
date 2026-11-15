@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.1)
+# Offline package runtime (0.5.2)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.1", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.5.2", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -117,6 +117,7 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | External/inline modules | Static imports/exports, ESM cycles and top-level await supported |
 | Literal dynamic import | Accepts string literals and template literals without substitutions for local `.js/.mjs`; computed/bare/external imports, attributes/JSON modules and module query/hash variants are rejected. Static `import`/`export … from` still requires a string literal under JavaScript grammar |
 | Literal `new URL("./asset", import.meta.url)` | Rewritten to child Blob URLs for known non-HTML resources, including existing JSON/TXT/BIN; dynamic arguments, HTML and fallback targets rejected |
+| Single-argument `new URL(path)` | The work document resolves path strings, including computed strings, from root `index.html` to child Blob URLs for known non-HTML resources. Package Blob URLs drop the query and keep the fragment. Use package-relative `fetch(path)` for HTML and fallback data |
 | Stylesheet link / style / style attributes | CSS parsed and rewritten, including url/import/image-set; CSS string serialization preserves escaping and fragments such as `#svgView(viewBox(...))`; Blob dependency cycles rejected |
 | Images/fonts/audio/video | Known non-HTML resource references supported; fallback references rejected. `srcset`/`imagesrcset` URLs and descriptors (`1.5x`, `100w`) are handled separately; `background` takes one URL. Local resources become Blob URLs, inline `data:` is retained, and external URLs fail with `EXTERNAL_URL`. `imagesrcset` is dropped on kept stylesheet links. Valid bytes do not guarantee browser codec support |
 | `new Audio("./audio/loop.mp3")` | `Audio` resolves package path strings, including computed strings, from the root `index.html` and uses child-frame Blob URLs for known media, preserving media fragments. For dynamic `audio.src` assignments, use a literal `new URL("./loop.mp3", import.meta.url).href` or create a Blob URL. Call `play()` from a real click or tap inside the work |

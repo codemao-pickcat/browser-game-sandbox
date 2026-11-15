@@ -105,17 +105,30 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     // and fallback data stay byte-only and never acquire automatic Blob URLs.
     for (const path of byPath.keys()) assetUrl(path);
 
+    const packageAsset = (input: unknown) => {
+      if (typeof input !== "string" || !input) return;
+      let reference: ReturnType<typeof resolvePackageReference>;
+      try { reference = resolvePackageReference(input, "index.html"); }
+      catch { return; }
+      const resource = byPath.get(reference.path);
+      if (resource) return { url: assetUrl(resource.path) + blobFragment(reference.suffix), mime: resource.mime };
+    };
+
+    // Single-argument URL accepts known package paths without exposing an HTTP
+    // base. Native parsing still handles absolute URLs and explicit bases.
+    window.URL = new Proxy(window.URL, {
+      construct(target, args, newTarget) {
+        const asset = args.length === 1 ? packageAsset(args[0]) : undefined;
+        return Reflect.construct(target, asset ? [asset.url] : args, newTarget);
+      },
+    });
+
     // The native Audio factory resolves relative strings against srcdoc's
     // fallback base URL. Resolve known package media against index.html first.
     const audioArgs = (args: unknown[]): unknown[] => {
-      const [src] = args;
-      if (typeof src !== "string" || !src) return args;
-      let reference: ReturnType<typeof resolvePackageReference>;
-      try { reference = resolvePackageReference(src, "index.html"); }
-      catch { return args; }
-      const mime = byPath.get(reference.path)?.mime;
-      if (!mime?.startsWith("audio/") && !mime?.startsWith("video/")) return args;
-      return [assetUrl(reference.path) + blobFragment(reference.suffix), ...args.slice(1)];
+      const asset = packageAsset(args[0]);
+      if (!asset || (!asset.mime.startsWith("audio/") && !asset.mime.startsWith("video/"))) return args;
+      return [asset.url, ...args.slice(1)];
     };
     window.Audio = new Proxy(window.Audio, {
       apply(target, thisArg, args) { return Reflect.apply(target, thisArg, audioArgs(args)); },

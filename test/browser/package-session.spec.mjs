@@ -404,6 +404,37 @@ test("child independently rejects fallback auto-resource references after valid-
   assert.deepEqual(result.events,["connected","ready-error"]);
 });
 
+test("single-argument URL resolves computed package paths for assets and fetch", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": '<script type="module" src="scripts/main.js"></script>',
+    "scripts/main.js": `
+      window.readAsset = async (name) => {
+        const path = "./assets/" + name + "?v=1#part";
+        const url = new URL(path);
+        return { href: url.href, text: await (await fetch(new URL(url))).text() };
+      };`,
+    "assets/data.txt": "package bytes",
+    "assets/passive.html": "<p>fetch only</p>",
+  });
+  const asset = await frame.evaluate(() => window.readAsset("data.txt"));
+  assert.match(asset.href, /^blob:null\/[^?#]+#part$/);
+  assert.equal(asset.text, "package bytes");
+  for (const name of ["missing.txt", "passive.html", "../../%2e%2e/assets/data.txt"]) {
+    await assert.rejects(frame.evaluate(name => window.readAsset(name), name), /TypeError:.*Invalid URL/);
+  }
+  const external = `${origin}/computed-url-network-probe`;
+  const behavior = await frame.evaluate(async external => {
+    const blob = URL.createObjectURL(new Blob(["local bytes"]));
+    const local = new URL(blob).href === blob;
+    URL.revokeObjectURL(blob);
+    let fetchError;
+    try { await fetch(new URL(external)); } catch (error) { fetchError = error.code; }
+    return { local, fetchError, explicitBase: new URL("./asset.txt", external).href };
+  }, external);
+  assert.deepEqual(behavior, { local: true, fetchError: "EXTERNAL_URL", explicitBase: `${origin}/asset.txt` });
+  assert.ok(!received.includes("/computed-url-network-probe"));
+});
+
 test("native Blob registry rejects appended query while accepting a fragment", async ({ page }) => {
   await page.goto(`${origin}/host`); await page.waitForFunction(() => window.hostReady);
   const result = await page.evaluate(async () => {
