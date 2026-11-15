@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import dgram from "node:dgram";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { test, expect } from "@playwright/test";
+import { offlineInlineDataPackage } from "./fixtures/offline-inline-data.mjs";
 
 let server, origin, udp, stunPort;
 const received = [], stunPackets = [];
 const hostHtml = `<!doctype html><div id="container"></div><script type="module">
 import { prepareSandboxPackage, createSandboxPackageSession } from '/runtime.js';
 window.scopes = new Map(); window.events = []; window.terminated = [];
-window.launch = async (sources, scope = 'a', prepareOptions) => {
+window.launch = async (sources, scope = 'a', prepareOptions, sessionOptions, moduleAliases) => {
   const files = Object.fromEntries(Object.entries(sources).map(([path, source]) => [path, typeof source === 'string' ? new TextEncoder().encode(source) : new Uint8Array(source)]));
   const metadata = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([path, bytes]) => [path, { size: bytes.byteLength, sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('') }])));
   if(window.shareByHash){
@@ -19,7 +21,8 @@ window.launch = async (sources, scope = 'a', prepareOptions) => {
     }
     window.sharedInputs=files;
   }
-  const prepared = await prepareSandboxPackage({manifest:{formatVersion:1, entrypoint:'index.html', files:metadata}, files}, prepareOptions);
+  const manifest = {formatVersion: moduleAliases ? 2 : 1, entrypoint:'index.html', files:metadata, ...(moduleAliases ? {moduleAliases} : {})};
+  const prepared = await prepareSandboxPackage({manifest, files}, prepareOptions);
   window.logicalBytes=prepared.totalBytes;
   if (!scopes.has(scope)) scopes.set(scope, new Map());
   const store = scopes.get(scope); // captured scope, never a mutable current-user lookup
@@ -28,7 +31,7 @@ window.launch = async (sources, scope = 'a', prepareOptions) => {
     async set(key, value) { store.set(key, value); },
     async delete(key) { store.delete(key); },
   };
-  window.session = createSandboxPackageSession({container:document.querySelector('#container'), package:prepared, storage:adapter, onTerminate:reason => terminated.push(reason)});
+  window.session = createSandboxPackageSession({...sessionOptions, container:document.querySelector('#container'), package:prepared, storage:adapter, clipboard:window.clipboardAdapter, onTerminate:reason => terminated.push(reason)});
   session.connected.then(() => events.push('connected'), () => events.push('connect-error'));
   session.ready.then(() => events.push('ready'), () => events.push('ready-error'));
   await session.ready;
@@ -51,14 +54,25 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await new Promise(resolve => server?.close(resolve)); await new Promise(resolve=>udp?.close(resolve)); });
 
-async function open(page, sources, scope = "a", prepareOptions) {
+async function open(page, sources, scope = "a", prepareOptions, sessionOptions, moduleAliases) {
   await page.goto(`${origin}/host`);
   await page.waitForFunction(() => window.hostReady);
   // Playwright's argument-object decoder drops an own __proto__ key. JSON.parse
   // preserves that literal path so this exercises SDK/browser transport instead.
-  await page.evaluate(({ sourcesJson, scope, prepareOptions }) => window.launch(JSON.parse(sourcesJson), scope, prepareOptions), { sourcesJson:JSON.stringify(sources), scope, prepareOptions });
+  await page.evaluate(({ sourcesJson, scope, prepareOptions, sessionOptions, moduleAliases }) => window.launch(JSON.parse(sourcesJson), scope, prepareOptions, sessionOptions, moduleAliases), { sourcesJson:JSON.stringify(sources), scope, prepareOptions, sessionOptions, moduleAliases });
   return page.frames().find(frame => frame.parentFrame() === page.mainFrame());
 }
+
+test("repeated imports of one locked npm specifier share a module instance", async ({ page }) => {
+  const artifact = 'globalThis.loads = (globalThis.loads ?? 0) + 1; export const value = { ready: true };';
+  const path = `__moss_npm__/${createHash("sha256").update(artifact).digest("hex")}.mjs`;
+  const frame = await open(page, {
+    "index.html": '<p id="result">waiting</p><script type="module">import { value } from "npm:@test/pkg@latest"; import { reexported } from "./external.js"; const dynamic = await import("npm:@test/pkg@latest"); document.querySelector("#result").textContent = JSON.stringify([value.ready, value === reexported, value === dynamic.value, globalThis.loads]);</script>',
+    "external.js": 'export { value as reexported } from "npm:@test/pkg@latest";',
+    [path]: artifact,
+  }, "npm", { worker: true }, undefined, { "npm:@test/pkg@latest": path });
+  await expect(frame.locator("#result")).toHaveText("[true,true,true,1]");
+});
 const png = Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvWQAAAAASUVORK5CYII=", "base64"));
 
 const font = Array.from(await readFile(new URL("./fixtures/ABeeZee-Regular.ttf", import.meta.url)));
@@ -87,18 +101,17 @@ test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fe
   assert.deepEqual(await page.evaluate(() => events), ["connected", "ready"]);
   await frame.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
   const result = await frame.evaluate(async () => {
-    let parentBlocked=false, localStorageBlocked=false;
+    let parentBlocked=false;
     try { void parent.document.body; } catch { parentBlocked=true; }
-    try { localStorage.getItem("x"); } catch { localStorageBlocked=true; }
     await document.querySelector("#image").decode();
     await document.fonts.load("16px OfflineTest");
-    return { font:document.fonts.check("16px OfflineTest"), duration:document.querySelector("#audio").duration, referrer:document.referrer,origin:location.origin,parentBlocked,localStorageBlocked,firstGameType,order,domReady,local,
+    return { font:document.fonts.check("16px OfflineTest"), duration:document.querySelector("#audio").duration, referrer:document.referrer,origin:location.origin,parentBlocked,firstGameType,order,domReady,local,
       margin:getComputedStyle(document.body).margin, image:document.querySelector("#image").naturalWidth,
       media:document.querySelector("#audio").src.startsWith("blob:null/"),
       frozen:Object.isFrozen(game), prototype:Object.getPrototypeOf(game)===null,
     };
   });
-  assert.deepEqual(result, { font:true,duration:1,referrer:"",origin:"null",parentBlocked:true,localStorageBlocked:true,firstGameType:"function",order:["classic","module"],domReady:true,
+  assert.deepEqual(result, { font:true,duration:1,referrer:"",origin:"null",parentBlocked:true,firstGameType:"function",order:["classic","module"],domReady:true,
     local:{value:42,dynamic:"dynamic",data:{local:true},save:"saved",image:1},margin:"7px",image:1,media:true,frozen:true,prototype:true });
   assert.deepEqual(errors, []);
   const errorsRpc = await frame.evaluate(async () => {
@@ -136,6 +149,52 @@ test("CSS SVG-view fragments remain quoted, parsed and actually rendered", async
   for(const id of Object.keys(backgrounds)) {
     assert.deepEqual(await frame.locator(`#${id}`).screenshot(),expected,`${id} must render the green SVG view, not drop the fragment or declaration`);
   }
+});
+
+test("inline data images, CSS, fonts and audio load in the opaque runtime", async ({ page }) => {
+  const frame = await open(page, offlineInlineDataPackage(font, wav));
+  await page.evaluate(() => { session.iframe.style.border = "0"; });
+  await frame.waitForFunction(() => document.querySelector("#sound").readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA);
+  const result = await frame.evaluate(async () => {
+    const responsive = document.querySelector("#responsive");
+    const styled = document.querySelector("#styled");
+    await Promise.all([responsive.decode(), styled.decode()]);
+    const loadedFonts = await document.fonts.load("16px InlineFixture");
+    return {
+      responsive: [responsive.naturalWidth, responsive.currentSrc.startsWith("data:image/svg+xml;")],
+      styled: styled.naturalWidth,
+      font: document.fonts.check("16px InlineFixture") && loadedFonts.some(font => font.status === "loaded"),
+      audio: document.querySelector("#sound").duration,
+      module: window.moduleResult,
+      icon: document.querySelector('link[rel="icon"]') !== null,
+    };
+  });
+  assert.deepEqual(result, {
+    responsive: [16, true], styled: 12, font: true, audio: 1,
+    module: { value: "loaded", imageWidth: 16 }, icon: false,
+  });
+  assert.deepEqual(await frame.locator("#swatch").screenshot(), await frame.locator("#reference").screenshot());
+});
+
+test("offline CSP blocks data script elements created after startup", async ({ page }) => {
+  const frame = await open(page, { "index.html": "<p>Ready</p>" });
+  const result = await frame.evaluate(async () => {
+    const script = document.createElement("script");
+    script.src = "data:text/javascript,window.dataScriptRan=true";
+    const violation = new Promise(resolve => {
+      document.addEventListener("securitypolicyviolation", event => {
+        resolve([event.effectiveDirective, event.blockedURI]);
+      }, { once: true });
+    });
+    const loaded = new Promise(resolve => {
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+    });
+    document.body.append(script);
+    if (await loaded) return { loaded: true };
+    return { violation: await violation, ran: window.dataScriptRan === true };
+  });
+  assert.deepEqual(result, { violation: ["script-src-elem", "data"], ran: false });
 });
 
 for(const worker of [false,true]) test(`fallback data survives browser prepare, transfer and child revalidation (host worker=${worker})`, async ({ page }) => {
@@ -506,6 +565,57 @@ test("storage is scoped by host closure, not user input; old session is destroye
   assert.deepEqual(await page.evaluate(() => terminated), ["switch"]);
 });
 
+test("offline Web Storage works at startup and resets between playback sessions", async ({ page }) => {
+  const sources = {
+    "index.html": `<script>
+      window.boot = [localStorage.length, sessionStorage.length, localStorage.getItem("score"), sessionStorage.getItem("score")];
+      localStorage.setItem("score", 42);
+      sessionStorage.setItem("score", 15);
+    </script>`,
+  };
+  await page.addInitScript(() => {
+    if (window === window.top) localStorage.setItem("score", "host-only");
+  });
+  const frame = await open(page, sources);
+  assert.deepEqual(await frame.evaluate(() => boot), [0, 0, null, null]);
+  const result = await frame.evaluate(async () => {
+    const local = localStorage.getItem("score");
+    const session = sessionStorage.getItem("score");
+    localStorage.setItem(55, "other");
+    const keys = [localStorage.key(0), localStorage.key(1), localStorage.key(2)];
+    localStorage.removeItem(55);
+    const missing = localStorage.getItem(55);
+    localStorage.clear();
+    let indexedDb;
+    try { indexedDB.open("offline-test"); } catch (error) { indexedDb = error.name; }
+    return { local, session, keys, missing, length: localStorage.length, indexedDb,
+      hostAdapter: await game.storageGet({ key: "score" }) };
+  });
+  assert.deepEqual(result, { local: "42", session: "15", keys: ["score", "55", null],
+    missing: null, length: 0, indexedDb: "SecurityError", hostAdapter: null });
+  assert.equal(await page.evaluate(() => localStorage.getItem("score")), "host-only");
+  const second = await open(page, sources);
+  assert.deepEqual(await second.evaluate(() => boot), [0, 0, null, null]);
+});
+
+test("offline Web Storage charges cumulative UTF-8 writes across both stores", async ({ page }) => {
+  const frame = await open(page, { "index.html": "<p>Storage quota</p>" });
+  const result = await frame.evaluate(() => {
+    // Including the 1-byte key, each write uses 512 KiB. Even an overwrite
+    // counts again, and clear() must not refund either write.
+    const value = "界".repeat(174762) + "x";
+    localStorage.setItem("a", value);
+    localStorage.setItem("a", value);
+    localStorage.clear();
+    let quota;
+    try { sessionStorage.setItem("a", "a"); } catch (error) {
+      quota = error instanceof DOMException && error.name;
+    }
+    return { quota, valueAfterRejection: sessionStorage.getItem("a") };
+  });
+  assert.deepEqual(result, { quota: "QuotaExceededError", valueAfterRejection: null });
+});
+
 test("dynamic external fetch, sockets, images, beacon and workers hit no real HTTP receiver", async ({ page }) => {
   const frame = await open(page, {"index.html":"<p>offline</p>","probe.data":[0xff,0,42]});
   const prefix = `/probe-${Date.now()}`;
@@ -583,19 +693,19 @@ test("dedicated Blob, classic file and module graph Workers run inside the opaqu
       window.workerResults = {a,b,c,detached:bytes.byteLength};
     </script>`,
     "unused-worker.data": "onmessage = e => postMessage(e.data);",
-    "workers/classic.js": "onmessage = e => postMessage(e.data * 3);",
+    "workers/classic.js": "onmessage = e => postMessage([e.data * 3, typeof localStorage, typeof sessionStorage]);",
     "workers/module.js": "import {base} from './base.js'; const {extra} = await import('./extra.js'); self.onmessage = e => postMessage(base + extra + e.data);",
     "workers/base.js": "export const base = 30;",
     "workers/extra.js": "export const extra = 10;",
-  });
-  assert.deepEqual(await frame.evaluate(() => workerResults), {a:16,b:21,c:42,detached:0});
+  }, "a", undefined, {permissions:["worker"]});
+  assert.deepEqual(await frame.evaluate(() => workerResults), {a:16,b:[21,"undefined","undefined"],c:42,detached:0});
   assert.equal(await frame.evaluate(() => location.origin), "null");
 });
 
 test("Blob Workers inherit network restrictions and are closed with the session", async ({ page }) => {
   const observedWorkers = [];
   const target = `${origin}/worker-network-probe`;
-  const frame = await open(page, {"index.html": `<p>Worker host</p>`});
+  const frame = await open(page, {"index.html": `<p>Worker host</p>`}, "a", undefined, {permissions:["worker"]});
   page.on('worker', worker => observedWorkers.push(worker));
   const source = `onmessage = async () => { let blocked = false; try { await fetch(${JSON.stringify(target)}); } catch { blocked = true; } postMessage({blocked}); };`;
   const result = await frame.evaluate(async source => {
@@ -612,8 +722,8 @@ test("Blob Workers inherit network restrictions and are closed with the session"
   assert.equal(await page.locator('iframe').count(), 0);
 });
 
-test("Worker admission rejects remote scripts and bounds live direct Workers", async ({ page }) => {
-  const frame = await open(page, {"index.html":"<p>Worker budget</p>"});
+test("Worker wrapper rejects remote scripts and has only a bypassable direct compatibility guard", async ({ page }) => {
+  const frame = await open(page, {"index.html":"<p>Worker budget</p>"}, "a", undefined, {permissions:["worker"]});
   const result = await frame.evaluate(() => {
     let remoteBlocked=false,limitBlocked=false;
     try { new Worker('https://example.invalid/worker.js'); } catch { remoteBlocked=true; }
@@ -631,7 +741,7 @@ test("Worker admission rejects remote scripts and bounds live direct Workers", a
 
 test("package WebAssembly data retains document/Blob Worker support while JavaScript eval stays blocked", async ({ page }) => {
   const bytes=[0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,6,1,4,0,65,42,11];
-  const frame=await open(page,{"index.html":"<p>WASM</p>","module.wasm":bytes});
+  const frame=await open(page,{"index.html":"<p>WASM</p>","module.wasm":bytes}, "a", undefined, {permissions:["worker","wasm"]});
   const result=await frame.evaluate(async()=>{
     const bytes=Array.from(new Uint8Array(await(await fetch("module.wasm")).arrayBuffer()));
     const {instance}=await WebAssembly.instantiate(new Uint8Array(bytes));

@@ -1,10 +1,11 @@
-export const SANDBOX_RUNTIME_VERSION = "0.3.3" as const;
+import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export interface SandboxPackageManifest {
-  readonly formatVersion: 1;
+export const SANDBOX_RUNTIME_VERSION = "0.5.0" as const;
+
+export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
   readonly files: Readonly<Record<string, { readonly sha256: string; readonly size: number }>>;
-}
+} & ({ readonly formatVersion: 1 } | { readonly formatVersion: 2; readonly moduleAliases: Readonly<Record<string, string>> });
 export interface SandboxPackageInput {
   readonly manifest: SandboxPackageManifest;
   readonly files: Readonly<Record<string, Uint8Array>>;
@@ -40,7 +41,12 @@ export function assertPackagePath(path: string): void {
   }
 }
 
-/** Internal, pure metadata validation shared by host preparation and child admission. */
+/** Validate and snapshot metadata before a trusted host requests package bytes. */
+export function normalizeSandboxPackageManifest(value: unknown): SandboxPackageManifest {
+  return validatePackageManifest(value).manifest;
+}
+
+/** Internal metadata and budgets shared by host preparation and child admission. */
 export function validatePackageManifest(value: unknown): {
   readonly manifest: SandboxPackageManifest;
   readonly paths: readonly string[];
@@ -50,8 +56,8 @@ export function validatePackageManifest(value: unknown): {
     return packageError("INVALID_MANIFEST", "Expected formatVersion 1 and root index.html");
   }
   const candidate = value as Record<string, unknown>;
-  if (candidate.formatVersion !== 1 || candidate.entrypoint !== "index.html") {
-    return packageError("INVALID_MANIFEST", "Expected formatVersion 1 and root index.html");
+  if ((candidate.formatVersion !== 1 && candidate.formatVersion !== 2) || candidate.entrypoint !== "index.html") {
+    return packageError("INVALID_MANIFEST", "Expected formatVersion 1 or 2 and root index.html");
   }
   if (!candidate.files || typeof candidate.files !== "object" || Array.isArray(candidate.files)) {
     return packageError("INVALID_MANIFEST", "Package files must be a manifest record");
@@ -75,8 +81,40 @@ export function validatePackageManifest(value: unknown): {
     if (totalBytes > SANDBOX_PACKAGE_LIMITS.totalBytes) packageError("PACKAGE_TOO_LARGE", "Package byte budget exceeded");
     files[path] = Object.freeze({ sha256, size });
   }
-  const manifest = Object.freeze({ formatVersion: 1 as const, entrypoint: "index.html" as const, files: Object.freeze(files) });
+  const base = { entrypoint: "index.html" as const, files: Object.freeze(files) };
+  let manifest: SandboxPackageManifest;
+  if (candidate.formatVersion === 2) {
+    const value = candidate.moduleAliases;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return packageError("INVALID_MANIFEST", "Expected npm module aliases");
+    const aliases = Object.entries(value);
+    if (!aliases.length || aliases.length > SANDBOX_PACKAGE_LIMITS.files) return packageError("INVALID_MANIFEST", "Invalid npm alias count");
+    const targets = new Set<string>();
+    const packages = new Map<string, string>();
+    for (const [specifier, path] of aliases) {
+      const parsed = parseNpmSpecifier(specifier);
+      if (!parsed || typeof path !== "string" || !files[path] || path !== npmPackagePath(files[path].sha256)) return packageError("INVALID_MANIFEST", "Invalid npm module alias");
+      if (packages.has(parsed.name) && packages.get(parsed.name) !== path) return packageError("INVALID_MANIFEST", "Conflicting npm module aliases");
+      packages.set(parsed.name, path);
+      targets.add(path);
+    }
+    if (Object.keys(files).some(path => isNpmPackagePath(path) && !targets.has(path))) return packageError("INVALID_MANIFEST", "Unexpected file in npm directory");
+    manifest = { ...base, formatVersion: 2, moduleAliases: Object.freeze(Object.fromEntries(aliases)) };
+  } else {
+    if (Object.hasOwn(candidate, "moduleAliases")) return packageError("INVALID_MANIFEST", "npm aliases require formatVersion 2");
+    manifest = { ...base, formatVersion: 1 };
+  }
+  Object.freeze(manifest);
   return { manifest, paths: Object.freeze(Object.keys(files)), totalBytes };
+}
+
+/** Recognize an inline URL and return its media type, without inspecting the payload. */
+export function parseInlineDataUrl(value: string): string | undefined {
+  // WHATWG URL scheme parsing ignores leading ASCII controls/spaces, and
+  // tabs/newlines anywhere in the scheme. The asset value itself stays intact.
+  const scheme = /^[\u0000-\u0020]*d[\t\n\r]*a[\t\n\r]*t[\t\n\r]*a[\t\n\r]*:/i.exec(value);
+  if (!scheme) return undefined;
+  const mediaType = /^[^;,]*/.exec(value.slice(scheme[0].length))![0];
+  return mediaType.replace(/[\t\n\r]/g, "").trim().toLowerCase() || "text/plain";
 }
 
 /** Virtual URL resolution only; never uses the host origin or a network API. */

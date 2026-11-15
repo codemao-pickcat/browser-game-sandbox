@@ -27,6 +27,9 @@ test("builds an enforceable baseline browser policy", () => {
   assert.match(policy.contentSecurityPolicy, /worker-src blob:/);
   assert.match(policy.contentSecurityPolicy, /wasm-unsafe-eval/);
   assert.match(policy.contentSecurityPolicy, /connect-src 'self' https:\/\/api\.example\.test/);
+  for (const assetDirective of ["img-src", "font-src", "media-src"]) {
+    assert.ok(policy.contentSecurityPolicy.split("; ").includes(`${assetDirective} 'self'`));
+  }
   assert.match(policy.contentSecurityPolicy, /frame-ancestors https:\/\/host\.example\.test/);
   assert.match(policy.permissionsPolicy, /camera=\("https:\/\/game\.example\.test"\)/);
   assert.equal(

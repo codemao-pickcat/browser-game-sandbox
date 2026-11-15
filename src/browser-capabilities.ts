@@ -1,3 +1,4 @@
+import { normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 import {
   assertValidNetworkOrigin,
   assertValidOrigin,
@@ -246,19 +247,35 @@ export function buildBrowserPolicy(options: BrowserPolicyOptions): BrowserPolicy
 }
 
 /** Best-effort native-browser offline profile; NOT an absolute network boundary. */
-export function buildOfflineBrowserPolicy(): BrowserPolicy {
+export function buildOfflineBrowserPolicy(permissions: readonly SandboxPackagePermission[] = []): BrowserPolicy {
+  const granted = new Set(normalizeSandboxPackagePermissions(permissions));
+  const grantedCapabilities: BrowserCapability[] = [];
+  const sandboxTokens = ["allow-scripts"];
+  const scriptSources = ["'unsafe-inline'", "blob:"];
+  if (granted.has("worker")) grantedCapabilities.push(BROWSER_CAPABILITIES.dedicatedWorker);
+  if (granted.has("wasm")) {
+    grantedCapabilities.push(BROWSER_CAPABILITIES.wasm);
+    scriptSources.push("'wasm-unsafe-eval'");
+  }
+  if (granted.has("eval")) scriptSources.push("'unsafe-eval'");
+  if (granted.has("pointerLock")) {
+    grantedCapabilities.push(BROWSER_CAPABILITIES.pointerLock);
+    sandboxTokens.push("allow-pointer-lock");
+  }
+  // clipboardRead is Host RPC only, never a native browser capability.
   const enforcement = Object.fromEntries(Object.values(BROWSER_CAPABILITIES).map(capability => [capability, "not-granted"])) as Record<BrowserCapability, BrowserCapabilityEnforcement>;
   enforcement[BROWSER_CAPABILITIES.networkConnect] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.websocket] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.webRtc] = "not-enforceable";
-  enforcement[BROWSER_CAPABILITIES.dedicatedWorker] = "not-distinguishable";
-  enforcement[BROWSER_CAPABILITIES.wasm] = "enforced";
+  if (granted.has("worker")) enforcement[BROWSER_CAPABILITIES.dedicatedWorker] = "not-distinguishable";
+  if (granted.has("wasm")) enforcement[BROWSER_CAPABILITIES.wasm] = "enforced";
+  if (granted.has("pointerLock")) enforcement[BROWSER_CAPABILITIES.pointerLock] = "enforced";
   return {
-    grantedCapabilities: [BROWSER_CAPABILITIES.dedicatedWorker, BROWSER_CAPABILITIES.wasm], sandboxTokens: ["allow-scripts"], iframeAllow: [],
+    grantedCapabilities, sandboxTokens, iframeAllow: [],
     contentSecurityPolicy: [
-      "default-src 'none'", "script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:", "style-src 'unsafe-inline' blob:",
-      "img-src blob:", "font-src blob:", "media-src blob:", "connect-src 'none'",
-      "worker-src blob:", "child-src 'none'", "frame-src 'none'", "object-src 'none'",
+      "default-src 'none'", `script-src ${scriptSources.join(" ")}`, "style-src 'unsafe-inline' blob:",
+      "img-src blob: data:", "font-src blob: data:", "media-src blob: data:", "connect-src 'none'",
+      `worker-src ${granted.has("worker") ? "blob:" : "'none'"}`, "child-src 'none'", "frame-src 'none'", "object-src 'none'",
       "base-uri 'none'", "form-action 'none'", "navigate-to 'none'",
     ].join("; "),
     permissionsPolicy: permissionPolicyFeatures.map(([feature]) => `${feature}=()`).join(", "),
@@ -267,6 +284,7 @@ export function buildOfflineBrowserPolicy(): BrowserPolicy {
       "Best-effort offline execution, not zero-network isolation. WebRTC/STUN and self-navigation are not reliably blocked in native browsers.",
       "CSP blocks common fetch/WebSocket/remote resource exits; navigation termination is reactive and cannot prevent the first request.",
       "navigate-to is not supported by all browsers. No arbitrary-URL host network proxy is provided.",
+      "Worker wrapping is compatibility/cleanup only; no hard Worker count, CPU or memory quota is enforced. SharedWorker/importScripts remain unsupported.",
     ],
   };
 }

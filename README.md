@@ -22,7 +22,7 @@ The browser suite requires Chromium once:
 npx playwright install chromium
 ```
 
-## Offline package entry (0.3.3)
+## Offline package entry (0.4.1)
 
 ```ts
 import { prepareSandboxPackage, createSandboxPackageSession } from "@codemao-pickcat/browser-game-sandbox";
@@ -30,7 +30,9 @@ import { prepareSandboxPackage, createSandboxPackageSession } from "@codemao-pic
 // Same pure parser/integrity check in Node.js and in the browser; no user-code
 // execution, DOM dependency or network access during preparation.
 const prepared = await prepareSandboxPackage({ manifest, files });
-const session = createSandboxPackageSession({ container, package: prepared, storage, onTerminate });
+// Trusted MOSS player MUST finish authorization before creating a session.
+// permissions defaults to []; eval implies wasm. Do not infer grants from code.
+const session = createSandboxPackageSession({ container, package: prepared, permissions, clipboard, storage, onTerminate });
 await session.connected; // authenticated bootstrap/RPC, not content readiness
 await session.ready;     // package loaded and initial scripts/modules evaluated
 // session.terminate();
@@ -38,18 +40,24 @@ await session.ready;     // package loaded and initial scripts/modules evaluated
 
 The execution entry is always root `index.html`; secondary HTML templates remain verified passive bytes for package-relative `fetch(...).text()`, never additional document/Blob/navigation entries. Unknown extensions and extensionless files (including names `js` and `json`) are accepted as raw GET/HEAD data with `application/octet-stream`, without automatic Blob URLs. They cannot be script/module/stylesheet, HTML resource attributes, CSS `url()`/`image-set()`, literal `new URL(..., import.meta.url)` or automatic Worker script targets. Known JSON/TXT/BIN and other supported formats keep their existing compatibility; sharing a MIME type with `.bin` does not grant fallback files Blob eligibility. Multi-file HTML/CSS/JS, static/literal-dynamic ESM imports, images/fonts/media and package-relative GET/HEAD fetch are supported within a documented compatibility matrix—not arbitrary ZIP transparency. A trusted embedded bootstrap authenticates an opaque iframe with the exact source, null Origin, one-time random token and one initial port. Package bytes have separate budgets/chunked transport; ordinary RPC stays at 64 KiB. Blobs are created inside the opaque child, not the parent.
 
+Optional permissions are `worker`, `wasm`, `pointerLock`, `eval`, `clipboardRead`, all disabled by default. Exported `SANDBOX_PACKAGE_PERMISSIONS` is frozen in that order; `normalizeSandboxPackagePermissions(unknown)` rejects non-arrays/unknown entries, deduplicates, sorts and adds `wasm` when `eval` is present. Worker/WASM/eval are enforced by the offline CSP; pointerLock adds only the sandbox token. The iframe stays opaque, without `allow-same-origin`. Trusted `prepare({worker:true})` is only a parser option, independent of work permissions; preparation never executes uploaded code.
+
+Only `clipboardRead` plus a `SandboxClipboardAdapter` exposes `game.clipboardReadText({})`. The adapter's `readText(signal: AbortSignal): Promise<string>` uses existing plugin/Host RPC strict input/output checks and sanitized errors: empty object input, 8 KiB UTF-8 output, concurrency 1, 30s timeout, cancellation and discarded late results after stop. Native iframe clipboard access stays denied.
+
 Optional string-only `window.game.storageGet/Set/Delete` use the existing host-plugin/RPC validation and a scope-bound host adapter. Limits match MOSS: 2000 files, 512 UTF-8 path bytes, 25 MiB/file and 50 MiB/package. `SANDBOX_RUNTIME_VERSION` equals the package version. The standalone `package.runtime.js` export is a self-contained trusted ESM browser bundle; `npm run prepare` builds dist without Git metadata, including for pinned-commit Git dependencies.
 
-**Native-browser offline restrictions are best-effort, not zero-network isolation.** CSP blocks tested common fetch/WebSocket/remote resource exits; WebRTC/STUN and self-navigation are not strongly guaranteed. There is no arbitrary-URL network proxy. This data compatibility change grants no new capabilities; existing dedicated Workers and WebAssembly remain supported under the same fixed policy. Game code may still interpret bytes or create its own Blobs within that policy: fetch-only describes SDK automation, not a security boundary. See the [complete API, support matrix, limits and threat model](./docs/offline-package.en.md).
+The offline runtime accepts `data:` in passive image, font and media positions. If the opaque frame denies native Web Storage, initial scripts get in-memory `localStorage` and `sessionStorage`. The optional host adapter preloads and saves `localStorage` through `window.game`; `sessionStorage` is scoped to a playback session.
+
+**Native-browser offline restrictions are best-effort, not zero-network isolation.** CSP blocks tested common fetch/WebSocket/remote resource exits; WebRTC/STUN and self-navigation are not strongly guaranteed. There is no arbitrary-URL network proxy. Resource acceptance grants no capabilities; dedicated Workers, WASM and eval/Function now require explicit grants. Dynamic code strings are not rewritten. XHR/SharedWorker/importScripts remain unsupported. The Worker wrapper's 32-direct-Worker guard is compatibility/cleanup, not a hard Worker/CPU/memory quota. Game code may still interpret bytes or create its own Blobs within that policy: fetch-only describes SDK automation, not a security boundary. See the [complete API, support matrix, limits and threat model](./docs/offline-package.en.md).
 
 ## Existing cross-origin runtime
 
 The trusted host creates an iframe with a stable, cross-origin game origin and starts a `SandboxHostSession`. Each untrusted game should use its own origin when storage or same-origin resource isolation matters. The platform preloads `dist/game.preload.js` before all game-controlled markup, exposing explicitly configured `window.game.xxx(payload, { signal, timeoutMs })` methods. Content installs no sandbox package and performs no handshake. The internal MessageChannel client retains exact host-origin checks; the host validates source, origin, strict Zod schemas, capabilities, payload size, rate limits, and lifecycle.
 
-## CI and publishing
+## CI
 
-- Pushes and pull requests run Node checks, an SDK-free Vue 3 consumer build, and Chromium sandbox tests. CI and publishing use `ubuntu-24.04` with explicit permissions and timeouts rather than a moving `ubuntu-latest` image. Browser checks and publishing run inside the official `mcr.microsoft.com/playwright:v1.64.1-noble` container with preinstalled browsers and system dependencies, avoiding runtime apt installation. The image version must match the locked Playwright version; an actual Chromium launch verifies the environment before tests. Environment or test failures still block publishing.
-- Tags matching `v*.*.*` run the full suite. The publisher accepts only successful same-repository push CI and verifies that the real version tag points to that CI commit before running package scripts. It synchronizes `package.json` to the tag version, verifies packed exports, runtime/package version consistency and the trusted browser bundles, rejects retired SDK exports/artifacts, builds an npm tarball, uploads it as an artifact, and publishes to the GitHub Packages npm registry.
+This SDK is maintained inside the MOSS monorepo and consumed through a repository file dependency, so it has no standalone workflow or publish job. The root `checks` workflow builds and tests the SDK first (`npm ci`, `npm test`, type checks, package verification and the Chromium sandbox suite) and then installs the API dependency. Bump the package version and rebuild the SDK here when its public surface changes; publishing to a registry is a separate, deliberate release step.
+
 - The public package surface is the ESM root host API plus trusted `game.preload.js` and `package.runtime.js` platform assets, not a content SDK. There is no Vue peer dependency.
 
 ## Documentation

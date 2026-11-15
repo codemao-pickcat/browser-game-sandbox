@@ -5,11 +5,17 @@ import { assertValidOrigin } from "./protocol.js";
 import { snapshotPreparedPackage, type PreparedSandboxPackage } from "./package-prepare.js";
 import { SANDBOX_PACKAGE_LIMITS as LIMITS, type PackageSnapshot } from "./package-format.js";
 import { packageStoragePlugin, type SandboxStorageAdapter } from "./package-storage.js";
+import { packageClipboardPlugin, type SandboxClipboardAdapter } from "./package-clipboard.js";
+import { normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 
 export interface SandboxPackageSessionOptions {
   readonly container: HTMLElement;
   readonly package: PreparedSandboxPackage;
+  /** Explicit trusted-player grants, default empty. Never inferred from code. */
+  readonly permissions?: readonly SandboxPackagePermission[];
   readonly storage?: SandboxStorageAdapter;
+  /** Exposed only with clipboardRead; native iframe clipboard stays disabled. */
+  readonly clipboard?: SandboxClipboardAdapter;
   readonly onTerminate?: (reason: string) => void;
 }
 export interface SandboxPackageSession {
@@ -22,17 +28,31 @@ export interface SandboxPackageSession {
 /** Native-browser, best-effort offline execution in a unique opaque iframe. */
 export function createSandboxPackageSession(options: SandboxPackageSessionOptions): SandboxPackageSession {
   const { container, onTerminate } = options;
+  const permissions = normalizeSandboxPackagePermissions(options.permissions === undefined ? [] : options.permissions);
   const doc = container.ownerDocument;
   const hostWindow = doc.defaultView;
   if (!hostWindow) throw new TypeError("Package session requires a live browser document");
   assertValidOrigin(hostWindow.location.origin);
   let snapshot: PackageSnapshot | undefined = snapshotPreparedPackage(options.package);
   const storage = packageStoragePlugin(options.storage);
-  const policy = buildOfflineBrowserPolicy();
+  const clipboard = packageClipboardPlugin(permissions.includes("clipboardRead") ? options.clipboard : undefined);
+  const plugins = {
+    capabilities: [...storage.capabilities, ...clipboard.capabilities],
+    methods: { ...storage.methods, ...clipboard.methods },
+    gameApi: { ...storage.gameApi, ...clipboard.gameApi },
+  };
+  const policy = buildOfflineBrowserPolicy(permissions);
   const token = Array.from(hostWindow.crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
   const iframe = doc.createElement("iframe");
   iframe.setAttribute("sandbox", policy.sandboxTokens.join(" "));
-  iframe.setAttribute("allow", "camera 'none'; microphone 'none'; geolocation 'none'; fullscreen 'none'; clipboard-read 'none'; clipboard-write 'none'");
+  iframe.setAttribute("allow", [
+    "camera 'none'", "microphone 'none'", "geolocation 'none'", "fullscreen 'none'",
+    // pointer-lock defaults to `*`, so the sandbox flag already gates it; still
+    // delegate explicitly so a restrictive parent policy cannot silently change
+    // the intent, and deny it outright when the work did not ask for it.
+    permissions.includes("pointerLock") ? "pointer-lock" : "pointer-lock 'none'",
+    "clipboard-read 'none'", "clipboard-write 'none'",
+  ].join("; "));
   iframe.referrerPolicy = "no-referrer";
   iframe.title = "Sandbox package";
   let stopped = false, loadObserved = false, portTransferred = false, bootstrapConnected = false, readySettled = false;
@@ -55,7 +75,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
     if (!readySettled) { readySettled = true; rejectReady(new Error(reason)); }
     onTerminate?.(reason);
   };
-  const rpc = new SandboxHostRpcSession({ ...storage, onTerminate: cleanup });
+  const rpc = new SandboxHostRpcSession({ ...plugins, onTerminate: cleanup });
   void rpc.connected.catch(() => {});
   const terminate = (reason = "Sandbox package terminated") => rpc.terminate(reason);
   const timer = setTimeout(() => terminate("Sandbox package load timed out"), LIMITS.transferTimeoutMs);
@@ -93,7 +113,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
       bootstrapConnected = true;
       const channel = new MessageChannel();
       rpc.attachAuthenticatedPort(channel.port1);
-      control.postMessage({ type: "rpc", init: rpc.initMessage, methods: storage.gameApi }, [channel.port2]);
+      control.postMessage({ type: "rpc", init: rpc.initMessage, methods: plugins.gameApi }, [channel.port2]);
       void rpc.connected.then(transfer).catch(() => terminate("Package transfer or RPC handshake failed"));
     } else if (data?.type === "ack" && pendingAck && data.sequence === pendingAck.sequence) {
       const ack = pendingAck; pendingAck = undefined; ack.resolve();

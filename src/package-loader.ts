@@ -1,6 +1,7 @@
 import { SandboxBridgeClient } from "./client.js";
 import type { SandboxGameApiBindings } from "./game-api-config.js";
 import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSnapshot, type ResourcePart } from "./package-format.js";
+import { installMemoryStorage } from "./package-web-storage.js";
 
 /** Runs only in the opaque child, after every byte has been received/verified. */
 export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings): Promise<() => void> {
@@ -8,6 +9,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
   const inlineModuleUrls: string[] = [];
   const workerUrls = new Map<string, string>();
   const workers = new Set<Worker>();
+  const clearStorage: (() => void)[] = [];
   const NativeWorker = window.Worker;
   const byPath = new Map(snapshot.plan.resources.map(resource => [resource.path, resource]));
   const createObjectURL = URL.createObjectURL.bind(URL);
@@ -30,7 +32,21 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     }
   };
   document.addEventListener("click", onLinkClick, true);
-  const cleanup = () => { document.removeEventListener("click", onLinkClick, true); stopObserving(); client.close(); for (const worker of workers) worker.terminate(); workers.clear(); for (const url of workerUrls.values()) revokeObjectURL(url); workerUrls.clear(); for (const url of urls.values()) revokeObjectURL(url); for (const url of inlineModuleUrls) revokeObjectURL(url); urls.clear(); inlineModuleUrls.length = 0; };
+  const cleanup = () => {
+    document.removeEventListener("click", onLinkClick, true);
+    stopObserving();
+    client.close();
+    for (let i = 0; i < clearStorage.length; i++) clearStorage[i]!();
+    clearStorage.length = 0;
+    for (const worker of workers) worker.terminate();
+    workers.clear();
+    for (const url of workerUrls.values()) revokeObjectURL(url);
+    workerUrls.clear();
+    for (const url of urls.values()) revokeObjectURL(url);
+    for (const url of inlineModuleUrls) revokeObjectURL(url);
+    urls.clear();
+    inlineModuleUrls.length = 0;
+  };
   window.addEventListener("pagehide", cleanup, { once: true });
   const render = (parts: readonly ResourcePart[]): string => parts.map(part => {
     if (typeof part === "string") return part;
@@ -63,7 +79,9 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
   // permits Blob workers; opaque origin and inherited connect-src remain intact.
   class PackageWorker extends NativeWorker {
     constructor(scriptURL: string | URL, options?: WorkerOptions) {
-      if (workers.size >= 32) throw new TypeError("Offline package Worker limit exceeded (32)");
+      // Compatibility guard for direct wrapper calls only, NOT a hard
+      // Worker/CPU/memory quota (nested workers and other realms can bypass it).
+      if (workers.size >= 32) throw new TypeError("Offline package direct Worker compatibility limit exceeded (32)");
       const url = String(scriptURL);
       if (!url.startsWith("blob:")) throw new TypeError("Worker must use a package file or a child-created Blob URL");
       // Chromium cannot start a native module Worker from an opaque-origin
@@ -94,6 +112,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
       api[name] = (payload, options = {}) => client.call(binding.method, payload, { timeoutMs: binding.defaultTimeoutMs, ...options });
     }
     Object.defineProperty(window, "game", { value: Object.freeze(api), enumerable: true, configurable: false, writable: false });
+    await installMemoryStorage(api, clearStorage);
 
     // Local compatibility layer, NOT a security boundary. It never calls native
     // fetch and is deliberately GET/HEAD-only, rooted at package index.html.

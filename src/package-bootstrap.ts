@@ -2,7 +2,7 @@ import { SandboxBridgeClient } from "./client.js";
 import { isBridgeInitMessage, assertValidOrigin } from "./protocol.js";
 import { parseSandboxGamePreloadConfig, type SandboxGameApiBindings } from "./game-api-config.js";
 import { loadSandboxPackage } from "./package-loader.js";
-import { prepareSandboxPackage, snapshotPreparedPackage } from "./package-prepare.js";
+import { prepareSandboxPackage, snapshotPreparedPackage } from "./package-compiler.js";
 import { SANDBOX_PACKAGE_LIMITS as LIMITS, validatePackageManifest, type SandboxPackageManifest } from "./package-format.js";
 
 // Only the trusted SDK writes this script/config into srcdoc. It is not a
@@ -72,7 +72,9 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
           control.onmessage = null;
           void (async () => {
             try {
-              const prepared = await prepareSandboxPackage(input, { worker: true });
+              // Revalidate without creating a Worker: the work's worker grant
+              // is independent of trusted-player preparation options.
+              const prepared = await prepareSandboxPackage(input);
               await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods);
               files = Object.create(null);
               clearTimeout(timer);

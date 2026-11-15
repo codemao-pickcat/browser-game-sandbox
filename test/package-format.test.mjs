@@ -74,7 +74,7 @@ test("MIME lookup uses the last filename dot and falls back safely for unknown a
 });
 
 test("absolute/network URLs remain forbidden and base paths must be canonical", () => {
-  for (const url of ["https://other.invalid/%2e%2e/secret.js", "https://package.invalid/%2e%2e/secret.js", "//package.invalid/%2e%2e/secret.js"]) {
+  for (const url of ["https://other.invalid/%2e%2e/secret.js", "https://package.invalid/%2e%2e/secret.js", "//package.invalid/%2e%2e/secret.js", "data:image/svg+xml,%3Csvg%2F%3E#view", " \u001fD\tata:, "]) {
     assert.throws(() => resolvePackageReference(url, "deep/nested/main.js"), error => error.code === "EXTERNAL_URL");
   }
   for (const from of ["../main.js", "/main.js", "a/./main.js", "a%2fb/main.js"]) {
