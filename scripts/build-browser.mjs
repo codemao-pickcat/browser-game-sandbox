@@ -1,5 +1,11 @@
 import { build } from "esbuild";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+
+const systemJsLicense = await readFile(new URL("../node_modules/systemjs/LICENSE", import.meta.url), "utf8");
+const systemJsSource = (await readFile(new URL(import.meta.resolve("systemjs/dist/system.min.js")), "utf8"))
+  .replace(/^\/\/# sourceMappingURL=.*$/m, "");
+await writeFile("dist/systemjs-LICENSE.txt", systemJsLicense);
+await writeFile("dist/package-systemjs-source.js", `export const PACKAGE_SYSTEMJS_SOURCE = ${JSON.stringify(`/*\n${systemJsLicense}\n*/\n${systemJsSource}`)};\n`);
 
 const preparation = await build({
   entryPoints: ["src/package-prepare-worker.ts"], bundle: true, format: "iife",

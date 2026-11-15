@@ -62,7 +62,7 @@ test("prebuild removes old dist outputs without touching sibling files", async (
 
 test("package verifier fails closed on retired artifacts in an otherwise valid package", () => {
   const script = fileURLToPath(new URL("../scripts/verify-package.mjs", import.meta.url));
-  const files = ["dist/index.d.ts", "dist/index.js", "dist/game.preload.js", "dist/package.runtime.js", "dist/package-bootstrap-source.js"].map(path => ({ path }));
+  const files = ["dist/index.d.ts", "dist/index.js", "dist/game.preload.js", "dist/package.runtime.js", "dist/package-bootstrap-source.js", "dist/systemjs-LICENSE.txt"].map(path => ({ path }));
   const verify = (entries) => spawnSync(process.execPath, [script], {
     input: JSON.stringify([{ files: entries }]), encoding: "utf8",
   });

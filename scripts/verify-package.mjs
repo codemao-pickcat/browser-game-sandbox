@@ -17,6 +17,10 @@ assert.equal(typeof publicApi.createSandboxPackageSession, "function");
 assert.equal("SandboxHostRpcSession" in publicApi, false);
 assert.equal(pkg.scripts.prepare, "npm run build");
 assert.ok(files.has("dist/package-bootstrap-source.js"), "Missing embedded trusted bootstrap");
+assert.ok(files.has("dist/systemjs-LICENSE.txt"), "Missing bundled SystemJS license");
+const systemJsLicense = await readFile(new URL("../dist/systemjs-LICENSE.txt", import.meta.url), "utf8");
+const systemJsCopy = await import("../dist/package-systemjs-source.js");
+assert.ok(systemJsCopy.PACKAGE_SYSTEMJS_SOURCE.includes(systemJsLicense), "Missing license in browser-distributed SystemJS source");
 assert.equal(pkg.exports["./game.preload.js"], "./dist/game.preload.js");
 for (const target of Object.values(pkg.exports).flatMap(value => typeof value === "string" ? [value] : Object.values(value))) {
   assert.ok(files.has(target.replace(/^\.\//, "")), `Missing packed export: ${target}`);

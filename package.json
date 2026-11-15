@@ -1,6 +1,6 @@
 {
   "name": "@codemao-pickcat/browser-game-sandbox",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "description": "Bare browser sandbox host bridge for untrusted web games",
   "engines": {
     "node": ">=24"
@@ -49,6 +49,7 @@
     "@playwright/test": "^1.64.1",
     "@types/css-tree": "^3.2.0",
     "esbuild": "^0.25.12",
+    "systemjs": "6.15.1",
     "typescript": "^7.0.2"
   },
   "dependencies": {

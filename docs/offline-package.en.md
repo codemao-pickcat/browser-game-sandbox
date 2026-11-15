@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.4)
+# Offline package runtime (0.6.0)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.4", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.6.0", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -141,7 +141,7 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Other `meta http-equiv="..."` | The whole `meta` element is dropped: a Blob/srcdoc document has no HTTP response header for those directives to override |
 | SRI and other inert attributes, `nomodule` | `integrity/ping/manifest/codebase/archive/srcdoc` are deleted on any element; a classic `<script nomodule>` element is removed from the document entirely, its `src` is not rewritten, materialized or parsed as a module (only its bytes remain for package fetch), and its inline code is dropped. `nomodule` has no meaning on module scripts, so a `type="module" nomodule` script keeps running and only the attribute is removed |
 | Form submission (`action`/`formaction`) | Rejected (`UNSUPPORTED_HTML_FORM`); layout and controls still work |
-| `link rel=icon/preload/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time without validating or rewriting the href, so a `data:,` favicon, missing file or external URL does not block preparation |
+| `link rel=icon/apple-touch-icon/preload/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time without validating or rewriting the href, so a `data:,` favicon, missing file or external URL does not block preparation |
 | Combined `rel` token lists (e.g. `rel="stylesheet preload"`) | Tokens are case-insensitive and order-independent. A combination with `stylesheet` keeps only that token and still validates the href as a stylesheet. Unknown tokens such as `shortcut` remain rejected (`UNSUPPORTED_HTML_LINK`) |
 
 JS files are validated with modern module syntax; classic references cannot depend on sloppy-only syntax such as `with`. Inline handlers are also parsed and cannot depend on top-level `return`. `document.write`, parser-stream timing, module `document.currentScript`, original HTTP paths/import.meta.url, XHR and arbitrary dynamic loading are not transparently compatible. The runtime replays DOMContentLoaded/load once after initial scripts finish. Later application tasks, playback and custom app readiness are outside `session.ready`.
@@ -149,6 +149,21 @@ JS files are validated with modern module syntax; classic references cannot depe
 Preparation errors expose `SandboxPackageError.code`: `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`, missing resources, CSS/JS/module restrictions and Blob cycles. Rejected HTML is split into `UNSUPPORTED_HTML_ELEMENT` (base/iframe/frame/frameset/object/embed/applet/portal, `meta http-equiv="refresh"`, `javascript:`/`data:`/`vbscript:` `a`/`area` href), `UNSUPPORTED_HTML_SCRIPT` (unsupported script type, JSON script block with `src`), `UNSUPPORTED_HTML_LINK` (unsupported `rel` token, `href` without `rel`) and `UNSUPPORTED_HTML_FORM` (`action`/`formaction`); messages name the file or pattern. Unsupported runtime operations fail through TypeError, module rejection, resource error or CSP. Successful preparation does not guarantee all game code works; failed initialization rejects ready and destroys the session rather than reporting fake readiness.
 
 When available, `SandboxPackageError.diagnostic.sourcePath` identifies the source file being checked. `diagnostic.issue` distinguishes XHR, SharedWorker and SVG restrictions, with `diagnostic.element` giving the rejected SVG tag. In-thread and Worker preparation expose the same diagnostics. User-facing hosts should use trusted templates and validate source paths against the uploaded manifest before displaying them.
+
+### Offline SystemJS
+
+The entry document enables the SDK's bundled SystemJS 6.15.1 with `systemjs-importmap` or `systemjs-module`. The declarative module below runs to completion before subsequent scripts and `session.ready`.
+
+```html
+<script type="systemjs-importmap" src="./config/imports.json"></script>
+<script type="systemjs-module" src="import:entry"></script>
+```
+
+For this example, `config/imports.json` contains `{"imports":{"entry":"../modules/main.js"}}`. Map targets resolve from the map file, or root `index.html` for inline maps. The `imports` object accepts exact bare aliases with package `.js` or `.mjs` targets. Prefix mappings, scopes, map extensions and module queries or fragments are unsupported. A `systemjs-module` tag can also point directly to a package script path.
+
+Named and anonymous `System.register`, `System.import()` and contextual dynamic imports are supported. Use package script files for anonymous registrations. Registered virtual module names can reference other registered names in the same virtual directory. Classic scripts start their own asynchronous tasks when they call `System.import()`. Use declarative entries to include module completion in initialization. Preparation validates maps, entries and script syntax/policy. Module graph resolution can also fail during playback.
+
+The loader resolves to verified package JavaScript and registered modules. Other resources use the existing offline APIs. If a work bundles its own loader, the loader script goes through the same JavaScript validation as any other uploaded script.
 
 ### Known incompatibilities
 

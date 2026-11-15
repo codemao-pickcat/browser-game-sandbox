@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.5.4" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.6.0" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
@@ -181,6 +181,8 @@ export interface PackagePlan {
   readonly workers: readonly CompiledResource[];
   /** The sole executable document, compiled from root index.html. */
   readonly html: readonly ResourcePart[];
+  /** Exact SystemJS aliases to validated script files. Absent for ordinary packages. */
+  readonly systemJsImports?: Readonly<Record<string, string>>;
 }
 export interface PackageSnapshot {
   readonly manifest: SandboxPackageManifest;
@@ -191,6 +193,10 @@ export interface PackageSnapshot {
 
 export function moduleSpecifier(path: string): string {
   return `sandbox-package:/${path}`;
+}
+
+export function isSystemJsAlias(value: string): boolean {
+  return /^[a-z_@][a-z\d_@./-]*$/i.test(value) && !value.endsWith("/") && !value.split("/").some(part => !part || part === "." || part === "..");
 }
 
 export const MIME_TYPES: Readonly<Record<string, string>> = Object.freeze({
