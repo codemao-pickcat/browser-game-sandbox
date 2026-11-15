@@ -46,7 +46,7 @@ const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set(["base", "iframe", "fr
 const ACTIVE_HREF_SCHEMES = /^(?:javascript|data|vbscript):/;
 const activeHrefScheme = (value: string): boolean => ACTIVE_HREF_SCHEMES.test(value.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "").toLowerCase());
 type HtmlNode = DefaultTreeAdapterMap["node"];
-type JsNode = Node & { name?: string; value?: unknown; source?: unknown; options?: unknown; attributes?: unknown; arguments?: unknown; callee?: unknown; object?: unknown; property?: unknown; expressions?: readonly Node[]; quasis?: readonly { value: { cooked: string | null } }[] };
+type JsNode = Node & { name?: string; value?: unknown; source?: unknown; options?: unknown; attributes?: unknown; arguments?: unknown; callee?: unknown; object?: unknown; property?: unknown; meta?: unknown; computed?: boolean; expressions?: readonly Node[]; quasis?: readonly { value: { cooked: string | null } }[] };
 type Edit = { start: number; end: number; text: string };
 // Rewritten literals can contain chars that were escaped in the input. Keep
 // '<' escaped so raw text in an inline script cannot become an HTML end tag.
@@ -207,6 +207,12 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
       if (value?.type === "TemplateLiteral" && value.expressions?.length === 0) return value.quasis?.[0]?.value.cooked ?? undefined;
       return value?.type === "Literal" && typeof value.value === "string" ? value.value : undefined;
     };
+    const isImportMetaUrl = (node: JsNode | undefined): boolean => {
+      if (node?.type !== "MemberExpression") return false;
+      const object = node.object as JsNode;
+      return object.type === "MetaProperty" && (object.meta as JsNode).name === "import" &&
+        (node.computed ? literal(node.property) : (node.property as JsNode).name) === "url";
+    };
     const replaceImport = (node: JsNode) => {
       const sourceNode = node.source as JsNode | undefined;
       if (!sourceNode) return;
@@ -255,8 +261,10 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
           let value = literal(arg);
           if (arg?.type === "NewExpression" && (arg.callee as JsNode)?.name === "URL") {
             const urlArgs = arg.arguments as JsNode[];
-            const base = urlArgs[1];
-            if (base?.type === "MemberExpression" && (base.object as JsNode)?.type === "MetaProperty" && (base.property as JsNode)?.name === "url") value = literal(urlArgs[0]);
+            if (isImportMetaUrl(urlArgs[1])) {
+              value = literal(urlArgs[0]);
+              if (value === undefined) packageError("DYNAMIC_RESOURCE", `Worker URL relative to import.meta.url requires a literal: ${from}`);
+            }
           }
           // Computed Blob URLs (e.g. Meshopt's worker pool) are checked by the browser at runtime.
           if (value !== undefined) {
@@ -264,13 +272,11 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
             edits.push({ start: arg!.start, end: arg!.end, text: quoteJs(reference(value, from, "worker")) });
           }
         }
-        if (callee.type === "Identifier" && callee.name === "URL") {
-          const base = args[1] as JsNode | undefined;
-          if (base?.type === "MemberExpression" && (base.object as JsNode)?.type === "MetaProperty" && (base.property as JsNode)?.name === "url") {
-            const value = literal(args[0]);
-            if (value === undefined) packageError("DYNAMIC_RESOURCE", `new URL(..., import.meta.url) requires a literal: ${from}`);
-            edits.push({ start: n.start, end: n.end, text: `new URL(${quoteJs(reference(value!, from))})` });
-          }
+        if (callee.type === "Identifier" && callee.name === "URL" && isImportMetaUrl(args[1])) {
+          const value = literal(args[0]);
+          if (value !== undefined) edits.push({ start: n.start, end: n.end, text: `new URL(${quoteJs(reference(value, from))})` });
+          else if (worker) packageError("DYNAMIC_RESOURCE", `Worker new URL(..., import.meta.url) requires a literal: ${from}`);
+          // Document modules resolve computed paths from their Blob URL at runtime.
         }
       },
     });

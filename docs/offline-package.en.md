@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.2)
+# Offline package runtime (0.5.3)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.2", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.5.3", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -116,8 +116,8 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Classic script src / inline script | Executed in document order after DOM installation; async/defer normalized to sequential execution |
 | External/inline modules | Static imports/exports, ESM cycles and top-level await supported |
 | Literal dynamic import | Accepts string literals and template literals without substitutions for local `.js/.mjs`; computed/bare/external imports, attributes/JSON modules and module query/hash variants are rejected. Static `import`/`export … from` still requires a string literal under JavaScript grammar |
-| Literal `new URL("./asset", import.meta.url)` | Rewritten to child Blob URLs for known non-HTML resources, including existing JSON/TXT/BIN; dynamic arguments, HTML and fallback targets rejected |
-| Single-argument `new URL(path)` | The work document resolves path strings, including computed strings, from root `index.html` to child Blob URLs for known non-HTML resources. Package Blob URLs drop the query and keep the fragment. Use package-relative `fetch(path)` for HTML and fallback data |
+| `new URL(path, import.meta.url)` | Resolves known non-HTML resources, including computed path strings, from the calling module's package directory. Inline document modules use root `index.html`. Worker graphs and static Worker entry references use literals |
+| `new URL(path)`, `new URL(path, document.baseURI)` | The work document resolves path strings from root `index.html`. Package Blob URLs drop the query and keep the fragment. `URL.parse` and `URL.canParse` use the same resolution when supported. Use package-relative `fetch(path)` for HTML and fallback data |
 | Stylesheet link / style / style attributes | CSS parsed and rewritten, including url/import/image-set; CSS string serialization preserves escaping and fragments such as `#svgView(viewBox(...))`; Blob dependency cycles rejected |
 | Images/fonts/audio/video | Known non-HTML resource references supported; fallback references rejected. `srcset`/`imagesrcset` URLs and descriptors (`1.5x`, `100w`) are handled separately; `background` takes one URL. Local resources become Blob URLs, inline `data:` is retained, and external URLs fail with `EXTERNAL_URL`. `imagesrcset` is dropped on kept stylesheet links. Valid bytes do not guarantee browser codec support |
 | `new Audio("./audio/loop.mp3")` | `Audio` resolves package path strings, including computed strings, from the root `index.html` and uses child-frame Blob URLs for known media, preserving media fragments. For dynamic `audio.src` assignments, use a literal `new URL("./loop.mp3", import.meta.url).href` or create a Blob URL. Call `play()` from a real click or tap inside the work |
@@ -126,6 +126,7 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Static query/fragment | Lookup uses the package path; query is dropped from Blob URLs, full fragment retained. Queries create no independent cache/version; ESM query/hash remains unsupported |
 | Package-relative fetch | GET/HEAD from the complete verified file set, including fallback data; exact raw bytes, MIME and Content-Length; HEAD has no body. Relative paths always start at root index.html, not the calling script |
 | Fetch of a rewritten known Blob URL | Returns the corresponding original file bytes, including JSON/TXT/BIN; missing own paths, external URLs and non-GET/HEAD methods fail with TypeError, without network fallback |
+| Fetch of a Blob URL created by the work document | GET/HEAD can read a live Blob registered by `URL.createObjectURL` in the work document. Fragments are accepted, and queries follow native Blob URL lookup semantics |
 | Fragment anchors, `a[href]`/`area[href]` | Supported; non-fragment `a`/`area` `href` values are kept without rewriting or validation, because the runtime `onLinkClick` in `package-loader.ts` already calls `preventDefault` in the capture phase for every `a[href]`/`area[href]` click and only handles `#fragment`; `javascript:`/`data:`/`vbscript:` remain rejected |
 | Dedicated Workers (requires worker) | Child-created Blob Workers and literal `.js/.mjs` paths, including `new Worker(new URL("./worker.js", import.meta.url), options)`, supported with messaging/transferables/classic/module options |
 | Worker module graph | Local static/literal-dynamic imports become direct Blob edges; cycles rejected. A classic bootstrap imports modules and queues messages until initialization (replayed MessageEvents are synthetic) |

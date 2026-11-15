@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.5.2" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.5.3" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
@@ -117,6 +117,8 @@ export function parseInlineDataUrl(value: string): string | undefined {
   return mediaType.replace(/[\t\n\r]/g, "").trim().toLowerCase() || "text/plain";
 }
 
+const NativeURL = URL;
+
 /** Virtual URL resolution only; never uses the host origin or a network API. */
 export function resolvePackageReference(reference: string, from: string): { path: string; suffix: string } {
   if (typeof reference !== "string" || !reference || reference.trim() !== reference ||
@@ -147,7 +149,7 @@ export function resolvePackageReference(reference: string, from: string): { path
       depth++;
     }
   }
-  const url = new URL(reference, `https://package.invalid/${from}`);
+  const url = new NativeURL(reference, `https://package.invalid/${from}`);
   let path: string;
   try { path = decodeURIComponent(url.pathname.slice(1)); }
   catch { return packageError("INVALID_PATH", `Invalid URL: ${reference}`); }

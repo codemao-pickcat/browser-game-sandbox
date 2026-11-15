@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.5.2）
+# 离线作品包运行时（0.5.3）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.2"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.5.3"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -112,8 +112,8 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 静态 `script src`、inline script | 支持；在完整 DOM 装载后按文档顺序执行；`async/defer` 归一为顺序执行 |
 | `type="module"`（外部/内联） | 支持，含静态 import/export、循环引用、top-level await |
 | `import("./literal.js")` | 支持普通字符串和无插值模板字符串；含插值或计算表达式、bare specifier、import attributes/JSON modules、module query/hash 变体明确拒绝。静态 `import`/`export … from` 按 JavaScript 语法使用普通字符串 |
-| `new URL("./asset", import.meta.url)` | 支持已知非 HTML literal 资源（含原有 JSON/TXT/BIN），重写为子文档创建的 Blob URL；动态参数、HTML 与 fallback Blob 资源明确拒绝，后两者请使用包内相对 fetch |
-| 单参数 `new URL(path)` | 作品文档中的字符串路径（含运行时拼接）以根 `index.html` 为基准，已知非 HTML 资源解析为子端 Blob URL。查询参数从包内 Blob URL 去除，片段保留。HTML 和 fallback 数据可用包内 `fetch(path)` 读取 |
+| `new URL(path, import.meta.url)` | 按模块文件目录解析已知非 HTML 资源，包括计算所得的字符串路径。内联模块以根 `index.html` 为基准。Worker 图及静态 Worker 脚本入口使用字面量 |
+| `new URL(path)`、`new URL(path, document.baseURI)` | 作品文档中的字符串路径以根 `index.html` 为基准。查询参数从包内 Blob URL 去除，片段保留。支持时 `URL.parse` 和 `URL.canParse` 使用相同的路径解析；HTML 和 fallback 数据可用包内 `fetch(path)` 读取 |
 | stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL，通过 CSS 字符串序列化保留引用和转义，包括 `#svgView(viewBox(...))` 等带括号 fragment；CSS Blob 依赖环拒绝 |
 | 图片、字体、音频、视频的静态资源引用 | 支持已知非 HTML 资源，fallback 数据不得作为自动资源引用。`srcset`/`imagesrcset` 候选按 URL 和描述符分别处理（如 `1.5x`、`100w`）；`background` 为单 URL。包内资源物化为 Blob，内联 `data:` 保留，外部 URL 报 `EXTERNAL_URL`。保留的 stylesheet 链接上的 `imagesrcset` 直接删除。字节有效不代表浏览器支持该编码 |
 | `new Audio("./audio/loop.mp3")` | `Audio` 的包内路径字符串（含运行时拼接）从根 `index.html` 解析，已知媒体文件使用子 iframe 的 Blob URL，保留媒体片段。动态设置 `audio.src` 时可用字面量 `new URL("./loop.mp3", import.meta.url).href` 或自行创建 Blob URL。请在作品内部的真实点击或触摸中调用 `play()` |
@@ -122,6 +122,7 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
 | `fetch("data.json")`、`fetch("model.glb")`、运行时计算包内相对路径 | 本地兼容层从完整文件集提供 GET/HEAD，返回原始包字节；HEAD 保留 MIME/字节长度且无响应体，fallback MIME 为 `application/octet-stream`。query/hash 不改变读取的文件或字节；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
 | `fetch(new URL("./data.json", import.meta.url))` | 支持重写后的本地 Blob 对应原始字节；不存在的文件/外部 URL/非 GET-HEAD 明确 TypeError，无网络回退 |
+| `fetch(new URL(URL.createObjectURL(blob)))` | 支持作品文档用 `URL.createObjectURL` 创建且仍有效的 Blob，GET/HEAD 在 iframe 内直接返回字节或响应头。片段可用，查询参数按浏览器 Blob URL 规则处理 |
 | `window.game.storageGet/Set/Delete` | 提供 adapter 时支持，严格对象 schema；不提供 adapter 时不暴露存储方法 |
 | fragment anchor 与 `a[href]`/`area[href]` | 支持；`a`/`area` 的非 fragment `href` 直接放行，既不重写也不报错，因为运行期 `package-loader.ts` 的 `onLinkClick` 已在捕获阶段对所有 `a[href]`/`area[href]` 无条件 `preventDefault`，只处理 `#fragment`；`javascript:`/`data:`/`vbscript:` 仍拒绝 |
 | 外部 URL 与 CDN 依赖 | 静态可识别的资源引用拒绝，不回退联网；请先打包成本地文件 |
