@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.0)
+# Offline package runtime (0.5.1)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.5.1", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -119,6 +119,7 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Literal `new URL("./asset", import.meta.url)` | Rewritten to child Blob URLs for known non-HTML resources, including existing JSON/TXT/BIN; dynamic arguments, HTML and fallback targets rejected |
 | Stylesheet link / style / style attributes | CSS parsed and rewritten, including url/import/image-set; CSS string serialization preserves escaping and fragments such as `#svgView(viewBox(...))`; Blob dependency cycles rejected |
 | Images/fonts/audio/video | Known non-HTML resource references supported; fallback references rejected. `srcset`/`imagesrcset` URLs and descriptors (`1.5x`, `100w`) are handled separately; `background` takes one URL. Local resources become Blob URLs, inline `data:` is retained, and external URLs fail with `EXTERNAL_URL`. `imagesrcset` is dropped on kept stylesheet links. Valid bytes do not guarantee browser codec support |
+| `new Audio("./audio/loop.mp3")` | `Audio` resolves package path strings, including computed strings, from the root `index.html` and uses child-frame Blob URLs for known media, preserving media fragments. For dynamic `audio.src` assignments, use a literal `new URL("./loop.mp3", import.meta.url).href` or create a Blob URL. Call `play()` from a real click or tap inside the work |
 | Inline `data:` URLs | Allowed unchanged in passive resource positions (`src`/`srcset`/`poster`/`background`, CSS `url()`/`image-set()` and literal `new URL`). They are not decoded into package files. CSP allows `data:` in `img-src`/`font-src`/`media-src`; SVG used as an image does not execute scripts. Scripts, modules, Workers, stylesheets (including `@import`) and direct `fetch()` reject `data:` with `INLINE_RESOURCE`; navigation links still reject it |
 | SVG | Self-contained, with no scripts, animation or external URLs. CSS declarations in `style` attributes follow the same validation as presentation attributes: only approved properties may use same-document `url(#id)`; unparsed CSS and active schemes are rejected. `<style>`, `foreignObject`, `image` and `use` remain unsupported |
 | Static query/fragment | Lookup uses the package path; query is dropped from Blob URLs, full fragment retained. Queries create no independent cache/version; ESM query/hash remains unsupported |

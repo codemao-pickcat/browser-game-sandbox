@@ -125,6 +125,42 @@ test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fe
   assert.deepEqual(errorsRpc,{codes:["INVALID_PAYLOAD","INVALID_PAYLOAD","INVALID_PAYLOAD"],value:null});
 });
 
+test("packaged audio plays after a click through HTML, Audio and Web Audio", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<audio id="track" src="./audio.wav"></audio>
+      <button id="start" type="button">播放</button>
+      <script type="module" src="./main.js"></script>`,
+    "main.js": `
+      const track = document.querySelector("#track");
+      const asset = "audio.wav";
+      const effect = new Audio("./" + asset + "?v=1#t=0.1");
+      const inline = new Audio("data:audio/wav;base64,${wav.toString("base64")}");
+      const remote = new Audio("${origin}/audio-network-probe.wav");
+      document.querySelector("#start").addEventListener("click", async () => {
+        const context = new AudioContext();
+        const start = audio => audio.play().then(() => "playing", error => error.name);
+        const webAudio = async () => {
+          await context.resume();
+          const buffer = await context.decodeAudioData(await (await fetch("./audio.wav")).arrayBuffer());
+          const source = context.createBufferSource();
+          source.buffer = buffer;
+          source.connect(context.destination);
+          source.start();
+          return context.state;
+        };
+        window.playback = await Promise.all([start(track), start(effect), webAudio(), start(inline), start(remote)]);
+        window.media = [track, effect, inline];
+      });`,
+    "audio.wav": Array.from(wav),
+  });
+  await frame.locator("#start").click();
+  await expect.poll(() => frame.evaluate(() => window.playback), { timeout: 3000 })
+    .toEqual(["playing", "playing", "running", "playing", "NotSupportedError"]);
+  await expect.poll(() => frame.evaluate(() => window.media.every(audio => audio.currentTime > 0))).toBe(true);
+  expect(await frame.evaluate(() => window.media[1].currentSrc)).toMatch(/^blob:null\/[^?#]+#t=0\.1$/);
+  expect(received).not.toContain("/audio-network-probe.wav");
+});
+
 test("CSS SVG-view fragments remain quoted, parsed and actually rendered", async ({ page }) => {
   const fragment="#svgView(viewBox(0,0,10,10))";
   const frame=await open(page,{

@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.5.0）
+# 离线作品包运行时（0.5.1）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.5.1"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -115,6 +115,7 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | `new URL("./asset", import.meta.url)` | 支持已知非 HTML literal 资源（含原有 JSON/TXT/BIN），重写为子文档创建的 Blob URL；动态参数、HTML 与 fallback Blob 资源明确拒绝，后两者请使用包内相对 fetch |
 | stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL，通过 CSS 字符串序列化保留引用和转义，包括 `#svgView(viewBox(...))` 等带括号 fragment；CSS Blob 依赖环拒绝 |
 | 图片、字体、音频、视频的静态资源引用 | 支持已知非 HTML 资源，fallback 数据不得作为自动资源引用。`srcset`/`imagesrcset` 候选按 URL 和描述符分别处理（如 `1.5x`、`100w`）；`background` 为单 URL。包内资源物化为 Blob，内联 `data:` 保留，外部 URL 报 `EXTERNAL_URL`。保留的 stylesheet 链接上的 `imagesrcset` 直接删除。字节有效不代表浏览器支持该编码 |
+| `new Audio("./audio/loop.mp3")` | `Audio` 的包内路径字符串（含运行时拼接）从根 `index.html` 解析，已知媒体文件使用子 iframe 的 Blob URL，保留媒体片段。动态设置 `audio.src` 时可用字面量 `new URL("./loop.mp3", import.meta.url).href` 或自行创建 Blob URL。请在作品内部的真实点击或触摸中调用 `play()` |
 | 内联 `data:` URL | `src`/`srcset`/`poster`/`background`、CSS `url()`/`image-set()` 和字面量 `new URL` 的非执行资源位置允许，保留原 URL，不解码为包内文件；`img-src`/`font-src`/`media-src` 允许 `data:`，浏览器在图片上下文渲染 SVG 时不执行脚本。脚本、模块、Worker、样式表（含 `@import`）与直接 `fetch()` 不接受 `data:`，报 `INLINE_RESOURCE`；链接导航仍拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG。`style` 属性按 CSS 声明列表校验，与表现属性一样只允许规定属性引用文档内部 `url(#id)`，不接受无法解析的 CSS 或活跃协议；仍不支持 `<style>`、`foreignObject`、`image`/`use` 等嵌入形式 |
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |

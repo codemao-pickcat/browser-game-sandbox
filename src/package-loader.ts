@@ -50,10 +50,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
   window.addEventListener("pagehide", cleanup, { once: true });
   const render = (parts: readonly ResourcePart[]): string => parts.map(part => {
     if (typeof part === "string") return part;
-    // Blob registry lookup has no query variants. Strip only the virtual
-    // search, preserving the entire fragment (including any '?' inside it).
-    const hash = part.suffix.indexOf("#");
-    return (part.worker ? workerUrl(part.asset) : assetUrl(part.asset)) + (hash < 0 ? "" : part.suffix.slice(hash));
+    return (part.worker ? workerUrl(part.asset) : assetUrl(part.asset)) + blobFragment(part.suffix);
   }).join("");
   const assetUrl = (path: string): string => {
     const known = urls.get(path);
@@ -107,6 +104,24 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     // Materialize only compiled known assets before user scripts. HTML templates
     // and fallback data stay byte-only and never acquire automatic Blob URLs.
     for (const path of byPath.keys()) assetUrl(path);
+
+    // The native Audio factory resolves relative strings against srcdoc's
+    // fallback base URL. Resolve known package media against index.html first.
+    const audioArgs = (args: unknown[]): unknown[] => {
+      const [src] = args;
+      if (typeof src !== "string" || !src) return args;
+      let reference: ReturnType<typeof resolvePackageReference>;
+      try { reference = resolvePackageReference(src, "index.html"); }
+      catch { return args; }
+      const mime = byPath.get(reference.path)?.mime;
+      if (!mime?.startsWith("audio/") && !mime?.startsWith("video/")) return args;
+      return [assetUrl(reference.path) + blobFragment(reference.suffix), ...args.slice(1)];
+    };
+    window.Audio = new Proxy(window.Audio, {
+      apply(target, thisArg, args) { return Reflect.apply(target, thisArg, audioArgs(args)); },
+      construct(target, args, newTarget) { return Reflect.construct(target, audioArgs(args), newTarget); },
+    });
+
     const api: Record<string, (payload: unknown, options?: Parameters<SandboxBridgeClient["call"]>[2]) => Promise<unknown>> = Object.create(null);
     for (const [name, binding] of Object.entries(methods)) {
       api[name] = (payload, options = {}) => client.call(binding.method, payload, { timeoutMs: binding.defaultTimeoutMs, ...options });
@@ -190,4 +205,10 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     stopObserving();
     return cleanup;
   } catch (error) { cleanup(); throw error; }
+}
+
+// Blob registry lookups have no query variants, but media fragments still work.
+function blobFragment(suffix: string): string {
+  const hash = suffix.indexOf("#");
+  return hash < 0 ? "" : suffix.slice(hash);
 }
