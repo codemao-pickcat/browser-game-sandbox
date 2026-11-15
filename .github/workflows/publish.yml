@@ -1,4 +1,4 @@
-name: Publish package
+name: Publish sandbox release
 
 on:
   workflow_run:
@@ -32,6 +32,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      package_artifact_id: ${{ steps.package_artifact.outputs.artifact-id }}
     env:
       RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
       EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -115,13 +117,94 @@ jobs:
         run: mkdir -p artifacts && npm pack --pack-destination artifacts
 
       - name: Upload package artifact
+        id: package_artifact
         uses: actions/upload-artifact@v5
         with:
-          name: browser-game-sandbox-package-${{ env.RELEASE_TAG }}
+          name: browser-game-sandbox-package-${{ env.RELEASE_TAG }}-${{ github.run_attempt }}
           path: artifacts/*.tgz
           if-no-files-found: error
 
       - name: Publish to GitHub Packages
-        run: npm publish --registry=https://npm.pkg.github.com
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          tarball="artifacts/codemao-pickcat-browser-game-sandbox-${version}.tgz"
+          registry=https://npm.pkg.github.com
+          if npm publish "$tarball" --registry="$registry"; then
+            exit 0
+          fi
+
+          # A retry may find that the previous publish already succeeded.
+          published_integrity="$(
+            npm view "@codemao-pickcat/browser-game-sandbox@${version}" dist.integrity --json --registry="$registry" \
+              | node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))'
+          )"
+          tarball_hash="$(node -e 'const data = require("node:fs").readFileSync(process.argv[1]); console.log(require("node:crypto").hash("sha512", data, "base64"))' "$tarball")"
+          if [[ "$published_integrity" != "sha512-$tarball_hash" ]]; then
+            echo "::error::Registry package integrity does not match the release tarball"
+            exit 1
+          fi
+          echo "This tarball is already published at version ${version}."
+
+  release:
+    name: Publish GitHub Release
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+      EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Download published npm tarball
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.publish.outputs.package_artifact_id }}
+          path: artifacts
+
+      - name: Publish release notes and npm tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag no longer points to the published commit"
+            exit 1
+          fi
+          tarball="artifacts/codemao-pickcat-browser-game-sandbox-${RELEASE_TAG#v}.tgz"
+          local_digest="sha256:$(sha256sum "$tarball" | cut -d ' ' -f 1)"
+          view_error="$RUNNER_TEMP/release-view-error"
+          if ! release="$(gh release view "$RELEASE_TAG" --json isDraft,assets 2>"$view_error")"; then
+            if ! grep -Fxq 'release not found' "$view_error"; then
+              cat "$view_error" >&2
+              exit 1
+            fi
+            notes=(--generate-notes)
+            if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]]; then
+              notes=(--notes-from-tag)
+            fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" "${notes[@]}"
+            release="$(gh release view "$RELEASE_TAG" --json isDraft,assets)"
+          fi
+
+          asset_digest="$(jq -r --arg name "${tarball##*/}" '.assets[] | select(.name == $name) | .digest // "unknown"' <<<"$release")"
+          if [[ -z "$asset_digest" ]]; then
+            gh release upload "$RELEASE_TAG" "$tarball"
+          elif [[ "$asset_digest" != "$local_digest" ]]; then
+            echo "::error::Existing release asset does not match the published npm tarball"
+            exit 1
+          fi
+          if [[ "$(jq -r '.isDraft' <<<"$release")" == true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
