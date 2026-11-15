@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.5.4" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.6.1" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";

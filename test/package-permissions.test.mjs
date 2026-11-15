@@ -6,12 +6,12 @@ import {
 } from "../dist/index.js";
 import { snapshotPreparedPackage } from "../dist/package-prepare.js";
 
-const order = ["worker", "wasm", "pointerLock", "eval", "clipboardRead"];
+const order = ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile"];
 test("canonical permission list is fixed and frozen", () => {
   assert.deepEqual(SANDBOX_PACKAGE_PERMISSIONS, order);
   assert.equal(Object.isFrozen(SANDBOX_PACKAGE_PERMISSIONS), true);
 });
-for (let mask = 0; mask < 32; mask++) {
+for (let mask = 0; mask < 2 ** order.length; mask++) {
   const grants = order.filter((_, i) => mask & (1 << i));
   test(`normalization and offline policy cover permission combination ${mask}`, () => {
     const input = [...grants].reverse().concat(grants);
