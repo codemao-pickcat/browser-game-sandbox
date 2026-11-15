@@ -11,7 +11,7 @@ window.launch=async(sources,permissions,worker=false)=>{
   const files=Object.fromEntries(Object.entries(sources).map(([path,text])=>[path,new TextEncoder().encode(text)]));
   const metadata=Object.fromEntries(await Promise.all(Object.entries(files).map(async([path,bytes])=>[path,{size:bytes.length,sha256:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('')}])));
   const prepared=await prepareSandboxPackage({manifest:{formatVersion:1,entrypoint:'index.html',files:metadata},files},{worker});
-  window.session=createSandboxPackageSession({container:document.querySelector('#container'),package:prepared,permissions,clipboard:window.clipboardAdapter});
+  window.session=createSandboxPackageSession({container:document.querySelector('#container'),package:prepared,permissions,clipboard:window.clipboardAdapter,playerProfile:window.playerProfile});
   await session.ready;
 };
 window.hostReady=true;
@@ -54,6 +54,43 @@ const source = `<script type="module">
   let parentBlocked=false;try{void parent.document.body;}catch{parentBlocked=true;}
   window.probes={...await probe(),workerResult,origin:location.origin,parentBlocked,clipboard:typeof game.clipboardReadText};
 </script>`;
+
+for (const [granted, supplied, hasAvatar] of [
+  [false, true, true], [true, false, false], [true, true, false], [true, true, true],
+]) {
+  test(`player profile requires grant and snapshot (${granted}, ${supplied}, ${hasAvatar})`, async ({ page }) => {
+    await hostPage(page);
+    await page.evaluate(async ({granted, supplied, hasAvatar}) => {
+      if (supplied) {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 1;
+        window.playerProfile = {
+          playerId: "work-player-1",
+          displayName: "PICKCAT player",
+          avatar: hasAvatar ? await new Promise(resolve => canvas.toBlob(resolve)) : null,
+        };
+      }
+      await launch({"index.html": "<img alt='Player'>"}, granted ? ["playerProfile"] : []);
+    }, {granted, supplied, hasAvatar});
+    const frame = child(page);
+    assert.equal(await frame.evaluate(() => typeof game.getPlayerProfile), granted && supplied ? "function" : "undefined");
+    if (!granted || !supplied) return;
+    const result = await frame.evaluate(async () => {
+      const {playerId, displayName, avatar} = await game.getPlayerProfile({});
+      if (!avatar) return {playerId, displayName, imageWidth: null};
+      const img = document.querySelector("img");
+      const url = URL.createObjectURL(avatar);
+      try {
+        img.src = url;
+        await img.decode();
+        return {playerId, displayName, imageWidth: img.naturalWidth};
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    });
+    assert.deepEqual(result, {playerId: "work-player-1", displayName: "PICKCAT player", imageWidth: hasAvatar ? 1 : null});
+  });
+}
 for (let mask = 0; mask < 32; mask++) {
   const permissions = order.filter((_, i) => mask & (1 << i));
   test(`actual opaque CSP enforces all executors for permission combination ${mask}`, async ({ page }) => {

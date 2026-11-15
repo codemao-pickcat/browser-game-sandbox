@@ -12,6 +12,7 @@ export * from "./plugin.js";
 export * from "./package-policy.js";
 export { SANDBOX_PACKAGE_PERMISSIONS, normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 export { type SandboxClipboardAdapter } from "./package-clipboard.js";
+export { type SandboxPlayerProfile, SANDBOX_PLAYER_AVATAR_MAX_BYTES, SANDBOX_PLAYER_AVATAR_TYPES } from "./package-player-profile.js";
 export * from "./protocol.js";
 export * from "./transport.js";
 export { prepareSandboxPackage, type PreparedSandboxPackage, type PrepareSandboxPackageOptions, type SandboxPackageDiagnostic, type SandboxPackageInput, type SandboxPackageManifest, SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError } from "./package-prepare.js";

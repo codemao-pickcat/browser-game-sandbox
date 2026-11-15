@@ -6,6 +6,7 @@ import { snapshotPreparedPackage, type PreparedSandboxPackage } from "./package-
 import { SANDBOX_PACKAGE_LIMITS as LIMITS, type PackageSnapshot } from "./package-format.js";
 import { packageStoragePlugin, type SandboxStorageAdapter } from "./package-storage.js";
 import { packageClipboardPlugin, type SandboxClipboardAdapter } from "./package-clipboard.js";
+import { packagePlayerProfilePlugin, type SandboxPlayerProfile } from "./package-player-profile.js";
 import { normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 
 export interface SandboxPackageSessionOptions {
@@ -16,6 +17,8 @@ export interface SandboxPackageSessionOptions {
   readonly storage?: SandboxStorageAdapter;
   /** Exposed only with clipboardRead; native iframe clipboard stays disabled. */
   readonly clipboard?: SandboxClipboardAdapter;
+  /** Trusted host snapshot, exposed only with the playerProfile grant. */
+  readonly playerProfile?: SandboxPlayerProfile;
   readonly onTerminate?: (reason: string) => void;
 }
 export interface SandboxPackageSession {
@@ -36,10 +39,11 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   let snapshot: PackageSnapshot | undefined = snapshotPreparedPackage(options.package);
   const storage = packageStoragePlugin(options.storage);
   const clipboard = packageClipboardPlugin(permissions.includes("clipboardRead") ? options.clipboard : undefined);
+  const playerProfile = packagePlayerProfilePlugin(permissions.includes("playerProfile") ? options.playerProfile : undefined);
   const plugins = {
-    capabilities: [...storage.capabilities, ...clipboard.capabilities],
-    methods: { ...storage.methods, ...clipboard.methods },
-    gameApi: { ...storage.gameApi, ...clipboard.gameApi },
+    capabilities: [...storage.capabilities, ...clipboard.capabilities, ...playerProfile.capabilities],
+    methods: { ...storage.methods, ...clipboard.methods, ...playerProfile.methods },
+    gameApi: { ...storage.gameApi, ...clipboard.gameApi, ...playerProfile.gameApi },
   };
   const policy = buildOfflineBrowserPolicy(permissions);
   const token = Array.from(hostWindow.crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
