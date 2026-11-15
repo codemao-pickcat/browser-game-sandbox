@@ -18,7 +18,13 @@ concurrency:
 jobs:
   check:
     name: Node ${{ matrix.node-version }} checks
-    runs-on: ubuntu-24.04
+    runs-on: >-
+      ${{ github.repository == 'codemao-pickcat/browser-game-sandbox' &&
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.user.login != 'dependabot[bot]')) &&
+          fromJSON('["self-hosted", "ci-9950x"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -42,7 +48,13 @@ jobs:
 
   vue:
     name: SDK-free Vue 3 native API build
-    runs-on: ubuntu-24.04
+    runs-on: >-
+      ${{ github.repository == 'codemao-pickcat/browser-game-sandbox' &&
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.user.login != 'dependabot[bot]')) &&
+          fromJSON('["self-hosted", "ci-9950x"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -62,7 +74,13 @@ jobs:
 
   browser:
     name: Chromium browser sandbox tests
-    runs-on: ubuntu-24.04
+    runs-on: >-
+      ${{ github.repository == 'codemao-pickcat/browser-game-sandbox' &&
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.user.login != 'dependabot[bot]')) &&
+          fromJSON('["self-hosted", "ci-9950x"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
