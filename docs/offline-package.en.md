@@ -1,4 +1,4 @@
-# Offline package runtime (0.6.0)
+# Offline package runtime (0.6.1)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.6.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.6.1", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -79,13 +79,19 @@ interface SandboxClipboardAdapter {
 const text: string = await window.game.clipboardReadText({});
 // Existing optional RPC cancellation remains available:
 // game.clipboardReadText({}, { signal, timeoutMs })
+```
 
+The input schema is a strict empty object; missing/null/array/extra fields fail. Output is a string of at most **8192 UTF-8 bytes**, not characters. Existing host-plugin/Host RPC validation, capability checks, cancellation and sanitized errors apply. Only one read is admitted (concurrent attempts fail, not queue); host and default client timeout are 30 seconds. A per-call timeout cannot extend the host cap. The adapter is bound at session creation and receives its request AbortSignal. Stop/cancel/timeout abort it and discard late text. Even an adapter ignoring abort retains its read slot until it settles, preventing overlapping underlying reads; the SDK cannot undo a native read already started. The host/player owns browser clipboard permission and user-gesture handling. No generic native `navigator.clipboard` fallback or iframe clipboard grant is supplied: iframe `allow` still denies clipboard-read/write and the browser policy keeps both features disabled.
+
+### Player profile
+
+```ts
 // Available when the trusted host supplies a snapshot and grants playerProfile:
 const profile = await window.game.getPlayerProfile({});
 // { playerId: string, displayName: string | null, avatar: Blob | null }
 ```
 
-The input schema is a strict empty object; missing/null/array/extra fields fail. Output is a string of at most **8192 UTF-8 bytes**, not characters. Existing host-plugin/Host RPC validation, capability checks, cancellation and sanitized errors apply. Only one read is admitted (concurrent attempts fail, not queue); host and default client timeout are 30 seconds. A per-call timeout cannot extend the host cap. The adapter is bound at session creation and receives its request AbortSignal. Stop/cancel/timeout abort it and discard late text. Even an adapter ignoring abort retains its read slot until it settles, preventing overlapping underlying reads; the SDK cannot undo a native read already started. The host/player owns browser clipboard permission and user-gesture handling. No generic native `navigator.clipboard` fallback or iframe clipboard grant is supplied: iframe `allow` still denies clipboard-read/write and the browser policy keeps both features disabled.
+The authenticated package transfer delivers the avatar Blob once. Profile reads return it alongside the identity fields.
 
 ## File recognition and raw data
 

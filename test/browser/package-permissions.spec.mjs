@@ -63,11 +63,22 @@ for (const [granted, supplied, hasAvatar] of [
     await page.evaluate(async ({granted, supplied, hasAvatar}) => {
       if (supplied) {
         const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = 1;
+        canvas.width = canvas.height = 256;
+        const context = canvas.getContext("2d");
+        const image = context.createImageData(canvas.width, canvas.height);
+        const pixels = new Uint32Array(image.data.buffer);
+        let seed = 42;
+        for (let index = 0; index < pixels.length; index++) {
+          seed = Math.imul(seed, 1664525) + 1013904223;
+          pixels[index] = seed | 0xff000000;
+        }
+        context.putImageData(image, 0, 0);
+        const avatar = hasAvatar ? await new Promise(resolve => canvas.toBlob(resolve)) : null;
+        if (avatar && avatar.size <= 64 * 1024) throw new Error("Expected avatar beyond the RPC budget");
         window.playerProfile = {
           playerId: "work-player-1",
           displayName: "PICKCAT player",
-          avatar: hasAvatar ? await new Promise(resolve => canvas.toBlob(resolve)) : null,
+          avatar,
         };
       }
       await launch({"index.html": "<img alt='Player'>"}, granted ? ["playerProfile"] : []);
@@ -88,7 +99,7 @@ for (const [granted, supplied, hasAvatar] of [
         URL.revokeObjectURL(url);
       }
     });
-    assert.deepEqual(result, {playerId: "work-player-1", displayName: "PICKCAT player", imageWidth: hasAvatar ? 1 : null});
+    assert.deepEqual(result, {playerId: "work-player-1", displayName: "PICKCAT player", imageWidth: hasAvatar ? 256 : null});
   });
 }
 for (let mask = 0; mask < 32; mask++) {

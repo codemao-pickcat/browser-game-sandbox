@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.6.0）
+# 离线作品包运行时（0.6.1）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.6.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.6.1"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -78,13 +78,19 @@ export interface SandboxClipboardAdapter {
 const text: string = await window.game.clipboardReadText({});
 // 沿用已有可选 RPC 参数：
 // game.clipboardReadText({}, { signal, timeoutMs })
+```
 
+输入是严格空对象，缺失/null/数组/额外字段拒绝。返回 string，最多 **8192 UTF-8 bytes**，不是字符数。复用已有 plugin/Host RPC schema、capability、取消和错误脱敏；最多一个进行中的读取，并发请求拒绝而非排队，Host 与默认客户端超时均 30 秒，调用方不能延长 Host 上限。adapter 在创建时绑定，接收当前请求的 AbortSignal；停止、取消、超时均 abort，迟到文本丢弃。即使 adapter 不响应取消，也保留其读取名额直至 settle，避免底层读取重叠；已开始的原生读取无法撤销。浏览器剪贴板权限与用户手势交由宿主/player 处理。不会为作品提供 navigator.clipboard 回退，也不授予原生权限：iframe allow 仍明确禁止 clipboard-read/write，浏览器策略同样保持禁用。
+
+### 玩家资料
+
+```ts
 // 可信宿主提供资料快照且授予 playerProfile 时可调用：
 const profile = await window.game.getPlayerProfile({});
 // { playerId: string, displayName: string | null, avatar: Blob | null }
 ```
 
-输入是严格空对象，缺失/null/数组/额外字段拒绝。返回 string，最多 **8192 UTF-8 bytes**，不是字符数。复用已有 plugin/Host RPC schema、capability、取消和错误脱敏；最多一个进行中的读取，并发请求拒绝而非排队，Host 与默认客户端超时均 30 秒，调用方不能延长 Host 上限。adapter 在创建时绑定，接收当前请求的 AbortSignal；停止、取消、超时均 abort，迟到文本丢弃。即使 adapter 不响应取消，也保留其读取名额直至 settle，避免底层读取重叠；已开始的原生读取无法撤销。浏览器剪贴板权限与用户手势交由宿主/player 处理。不会为作品提供 navigator.clipboard 回退，也不授予原生权限：iframe allow 仍明确禁止 clipboard-read/write，浏览器策略同样保持禁用。
+头像 Blob 在经过认证的作品传输中交付一次。读取资料时，SDK 将它与身份字段一起返回。
 
 ## 预算与文件格式
 

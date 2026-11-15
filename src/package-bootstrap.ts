@@ -4,6 +4,7 @@ import { parseSandboxGamePreloadConfig, type SandboxGameApiBindings } from "./ga
 import { loadSandboxPackage } from "./package-loader.js";
 import { prepareSandboxPackage, snapshotPreparedPackage } from "./package-compiler.js";
 import { SANDBOX_PACKAGE_LIMITS as LIMITS, validatePackageManifest, type SandboxPackageManifest } from "./package-format.js";
+import { parseSandboxPlayerAvatar } from "./package-player-profile.js";
 
 // Only the trusted SDK writes this script/config into srcdoc. It is not a
 // resource from the uploaded package and never executes before authentication.
@@ -66,6 +67,8 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
           return;
         }
         if (data?.type === "finish" && manifest && client && index === paths.length && received === expectedBytes) {
+          if (data.playerAvatar !== undefined && !methods.getPlayerProfile) throw new TypeError("Player avatar requires a profile binding");
+          const avatar = data.playerAvatar === undefined ? null : parseSandboxPlayerAvatar(data.playerAvatar);
           finished = true;
           const input = { manifest, files };
           // Ignore further messages permanently; no rebinding or duplicate finish.
@@ -75,7 +78,7 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
               // Revalidate without creating a Worker: the work's worker grant
               // is independent of trusted-player preparation options.
               const prepared = await prepareSandboxPackage(input);
-              await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods);
+              await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods, avatar);
               files = Object.create(null);
               clearTimeout(timer);
               post({ type: "ready" }); control.close();
