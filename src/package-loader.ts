@@ -3,9 +3,10 @@ import type { SandboxGameApiBindings } from "./game-api-config.js";
 import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSnapshot, type ResourcePart } from "./package-format.js";
 import { installMemoryStorage } from "./package-web-storage.js";
 import { installPackageSystemJs } from "./package-systemjs.js";
+import type { SandboxPlayerProfile } from "./package-player-profile.js";
 
 /** Runs only in the opaque child, after every byte has been received/verified. */
-export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings): Promise<() => void> {
+export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings, playerAvatar: Blob | null): Promise<() => void> {
   const urls = new Map<string, string>();
   const filesByBlobUrl = new Map<string, string>();
   const inlineModuleUrls: string[] = [];
@@ -180,6 +181,13 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     const api: Record<string, (payload: unknown, options?: Parameters<SandboxBridgeClient["call"]>[2]) => Promise<unknown>> = Object.create(null);
     for (const [name, binding] of Object.entries(methods)) {
       api[name] = (payload, options = {}) => client.call(binding.method, payload, { timeoutMs: binding.defaultTimeoutMs, ...options });
+    }
+    const profileBinding = methods.getPlayerProfile;
+    if (profileBinding) {
+      api.getPlayerProfile = async (payload, options) => {
+        const identity = await client.call<Omit<SandboxPlayerProfile, "avatar">>(profileBinding.method, payload, { timeoutMs: profileBinding.defaultTimeoutMs, ...options });
+        return { ...identity, avatar: playerAvatar };
+      };
     }
     Object.defineProperty(window, "game", { value: Object.freeze(api), enumerable: true, configurable: false, writable: false });
     await installMemoryStorage(api, clearStorage);
