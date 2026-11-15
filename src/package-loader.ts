@@ -6,11 +6,16 @@ import { installMemoryStorage } from "./package-web-storage.js";
 /** Runs only in the opaque child, after every byte has been received/verified. */
 export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings): Promise<() => void> {
   const urls = new Map<string, string>();
+  const filesByBlobUrl = new Map<string, string>();
   const inlineModuleUrls: string[] = [];
+  const inlineModuleBases = new Set<string>();
+  const workBlobs = new Map<string, Blob>();
   const workerUrls = new Map<string, string>();
   const workers = new Set<Worker>();
   const clearStorage: (() => void)[] = [];
   const NativeWorker = window.Worker;
+  const NativeURL = window.URL;
+  const NativeBlob = window.Blob;
   const byPath = new Map(snapshot.plan.resources.map(resource => [resource.path, resource]));
   const createObjectURL = URL.createObjectURL.bind(URL);
   const revokeObjectURL = URL.revokeObjectURL.bind(URL);
@@ -44,16 +49,17 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     workerUrls.clear();
     for (const url of urls.values()) revokeObjectURL(url);
     for (const url of inlineModuleUrls) revokeObjectURL(url);
+    for (const url of workBlobs.keys()) revokeObjectURL(url);
     urls.clear();
+    filesByBlobUrl.clear();
+    inlineModuleBases.clear();
+    workBlobs.clear();
     inlineModuleUrls.length = 0;
   };
   window.addEventListener("pagehide", cleanup, { once: true });
   const render = (parts: readonly ResourcePart[]): string => parts.map(part => {
     if (typeof part === "string") return part;
-    // Blob registry lookup has no query variants. Strip only the virtual
-    // search, preserving the entire fragment (including any '?' inside it).
-    const hash = part.suffix.indexOf("#");
-    return (part.worker ? workerUrl(part.asset) : assetUrl(part.asset)) + (hash < 0 ? "" : part.suffix.slice(hash));
+    return (part.worker ? workerUrl(part.asset) : assetUrl(part.asset)) + blobFragment(part.suffix);
   }).join("");
   const assetUrl = (path: string): string => {
     const known = urls.get(path);
@@ -63,6 +69,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     const body = resource.parts === null ? new Uint8Array(snapshot.files[path]!) : render(resource.parts);
     const url = createObjectURL(new Blob([body], { type: resource.mime }));
     urls.set(path, url);
+    filesByBlobUrl.set(url, path);
     return url;
   };
   const workerByPath = new Map(snapshot.plan.workers.map(resource => [resource.path, resource]));
@@ -107,6 +114,68 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     // Materialize only compiled known assets before user scripts. HTML templates
     // and fallback data stay byte-only and never acquire automatic Blob URLs.
     for (const path of byPath.keys()) assetUrl(path);
+
+    const packageAsset = (input: unknown, from: string) => {
+      if (typeof input !== "string" || !input) return;
+      let reference: ReturnType<typeof resolvePackageReference>;
+      try { reference = resolvePackageReference(input, from); }
+      catch { return; }
+      const resource = byPath.get(reference.path);
+      if (resource) return { url: assetUrl(resource.path) + blobFragment(reference.suffix), mime: resource.mime };
+    };
+
+    // An asset Blob base represents its original path. An inline module and
+    // the current document use the virtual package root.
+    const urlArgs = (args: unknown[]): unknown[] => {
+      const [input, base] = args;
+      const baseUrl = base instanceof NativeURL ? base.href : base;
+      let from: string | undefined;
+      if (base === undefined || baseUrl === document.baseURI || baseUrl === window.location.href) from = "index.html";
+      else if (typeof baseUrl === "string") {
+        const url = baseUrl.split(/[?#]/, 1)[0]!;
+        from = inlineModuleBases.has(url) ? "index.html" : filesByBlobUrl.get(url);
+      }
+      const asset = from === undefined ? undefined : packageAsset(input, from);
+      return asset ? [asset.url] : args;
+    };
+    window.URL = new Proxy(NativeURL, {
+      construct(target, args, newTarget) { return Reflect.construct(target, urlArgs(args), newTarget); },
+    });
+    for (const method of ["canParse", "parse"] as const) {
+      const native = NativeURL[method];
+      if (typeof native === "function") Object.defineProperty(NativeURL, method, {
+        value: (...args: unknown[]) => Reflect.apply(native, NativeURL, urlArgs(args)),
+      });
+    }
+    // Keep the work's own Blob data available to GET/HEAD without native fetch
+    // or a CSP exception. Packaged blobs use the verified file map separately.
+    NativeURL.createObjectURL = object => {
+      const url = createObjectURL(object);
+      if (object instanceof NativeBlob) workBlobs.set(url, object);
+      return url;
+    };
+    NativeURL.revokeObjectURL = function (value) {
+      if (arguments.length === 0) return Reflect.apply(revokeObjectURL, undefined, []);
+      const url = `${value}`;
+      revokeObjectURL(url);
+      try {
+        const parsed = new NativeURL(url);
+        workBlobs.delete(parsed.href.split("#", 1)[0]!);
+      } catch { /* Native revocation ignores invalid URL strings. */ }
+    };
+
+    // The native Audio factory resolves relative strings against srcdoc's
+    // fallback base URL. Resolve known package media against index.html first.
+    const audioArgs = (args: unknown[]): unknown[] => {
+      const asset = packageAsset(args[0], "index.html");
+      if (!asset || (!asset.mime.startsWith("audio/") && !asset.mime.startsWith("video/"))) return args;
+      return [asset.url, ...args.slice(1)];
+    };
+    window.Audio = new Proxy(window.Audio, {
+      apply(target, thisArg, args) { return Reflect.apply(target, thisArg, audioArgs(args)); },
+      construct(target, args, newTarget) { return Reflect.construct(target, audioArgs(args), newTarget); },
+    });
+
     const api: Record<string, (payload: unknown, options?: Parameters<SandboxBridgeClient["call"]>[2]) => Promise<unknown>> = Object.create(null);
     for (const [name, binding] of Object.entries(methods)) {
       api[name] = (payload, options = {}) => client.call(binding.method, payload, { timeoutMs: binding.defaultTimeoutMs, ...options });
@@ -116,14 +185,17 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
 
     // Local compatibility layer, NOT a security boundary. It never calls native
     // fetch and is deliberately GET/HEAD-only, rooted at package index.html.
-    const blobs = new Map([...urls].map(([path, url]) => [url, path]));
     const localFetch: typeof fetch = async (input, init = {}) => {
       const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
       signal?.throwIfAborted();
       const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
       if (method !== "GET" && method !== "HEAD") throw new TypeError("Offline package fetch supports GET/HEAD only");
       const reference = input instanceof Request ? input.url : String(input);
-      const path = blobs.get(reference.split(/[?#]/, 1)[0]!) ?? resolvePackageReference(reference, "index.html").path;
+      const blob = workBlobs.get(reference.split("#", 1)[0]!);
+      if (blob) return new Response(method === "HEAD" ? null : blob, {
+        headers: { "Content-Type": blob.type, "Content-Length": String(blob.size) },
+      });
+      const path = filesByBlobUrl.get(reference.split(/[?#]/, 1)[0]!) ?? resolvePackageReference(reference, "index.html").path;
       if (!Object.hasOwn(snapshot.files, path)) throw new TypeError(`Missing offline fetch resource: ${reference}`);
       const bytes = snapshot.files[path]!;
       signal?.throwIfAborted();
@@ -166,7 +238,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
       // as external modules (including top-level await).
       if (script.type === "module" && !script.hasAttribute("src")) {
         const url = createObjectURL(new Blob([script.textContent ?? ""], { type: "text/javascript" }));
-        inlineModuleUrls.push(url); executable.src = url; executable.textContent = "";
+        inlineModuleUrls.push(url); inlineModuleBases.add(url); executable.src = url; executable.textContent = "";
       }
       if (script.type === "module") {
         // script.load can precede top-level-await settlement. Native import()
@@ -190,4 +262,10 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     stopObserving();
     return cleanup;
   } catch (error) { cleanup(); throw error; }
+}
+
+// Blob registry lookups have no query variants, but media fragments still work.
+function blobFragment(suffix: string): string {
+  const hash = suffix.indexOf("#");
+  return hash < 0 ? "" : suffix.slice(hash);
 }

@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.0)
+# Offline package runtime (0.5.4)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.5.4", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -116,14 +116,17 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Classic script src / inline script | Executed in document order after DOM installation; async/defer normalized to sequential execution |
 | External/inline modules | Static imports/exports, ESM cycles and top-level await supported |
 | Literal dynamic import | Accepts string literals and template literals without substitutions for local `.js/.mjs`; computed/bare/external imports, attributes/JSON modules and module query/hash variants are rejected. Static `import`/`export … from` still requires a string literal under JavaScript grammar |
-| Literal `new URL("./asset", import.meta.url)` | Rewritten to child Blob URLs for known non-HTML resources, including existing JSON/TXT/BIN; dynamic arguments, HTML and fallback targets rejected |
+| `new URL(path, import.meta.url)` | Resolves known non-HTML resources, including computed path strings, from the calling module's package directory. Inline document modules use root `index.html`. Worker graphs and static Worker entry references use literals |
+| `new URL(path)`, `new URL(path, document.baseURI)` | The work document resolves path strings from root `index.html`. Package Blob URLs drop the query and keep the fragment. `URL.parse` and `URL.canParse` use the same resolution when supported. Use package-relative `fetch(path)` for HTML and fallback data |
 | Stylesheet link / style / style attributes | CSS parsed and rewritten, including url/import/image-set; CSS string serialization preserves escaping and fragments such as `#svgView(viewBox(...))`; Blob dependency cycles rejected |
 | Images/fonts/audio/video | Known non-HTML resource references supported; fallback references rejected. `srcset`/`imagesrcset` URLs and descriptors (`1.5x`, `100w`) are handled separately; `background` takes one URL. Local resources become Blob URLs, inline `data:` is retained, and external URLs fail with `EXTERNAL_URL`. `imagesrcset` is dropped on kept stylesheet links. Valid bytes do not guarantee browser codec support |
+| `new Audio("./audio/loop.mp3")` | `Audio` resolves package path strings, including computed strings, from the root `index.html` and uses child-frame Blob URLs for known media, preserving media fragments. For dynamic `audio.src` assignments, use a literal `new URL("./loop.mp3", import.meta.url).href` or create a Blob URL. Call `play()` from a real click or tap inside the work |
 | Inline `data:` URLs | Allowed unchanged in passive resource positions (`src`/`srcset`/`poster`/`background`, CSS `url()`/`image-set()` and literal `new URL`). They are not decoded into package files. CSP allows `data:` in `img-src`/`font-src`/`media-src`; SVG used as an image does not execute scripts. Scripts, modules, Workers, stylesheets (including `@import`) and direct `fetch()` reject `data:` with `INLINE_RESOURCE`; navigation links still reject it |
 | SVG | Self-contained, with no scripts, animation or external URLs. CSS declarations in `style` attributes follow the same validation as presentation attributes: only approved properties may use same-document `url(#id)`; unparsed CSS and active schemes are rejected. `<style>`, `foreignObject`, `image` and `use` remain unsupported |
 | Static query/fragment | Lookup uses the package path; query is dropped from Blob URLs, full fragment retained. Queries create no independent cache/version; ESM query/hash remains unsupported |
 | Package-relative fetch | GET/HEAD from the complete verified file set, including fallback data; exact raw bytes, MIME and Content-Length; HEAD has no body. Relative paths always start at root index.html, not the calling script |
 | Fetch of a rewritten known Blob URL | Returns the corresponding original file bytes, including JSON/TXT/BIN; missing own paths, external URLs and non-GET/HEAD methods fail with TypeError, without network fallback |
+| Fetch of a Blob URL created by the work document | GET/HEAD can read a live Blob registered by `URL.createObjectURL` in the work document. Fragments are accepted, and queries follow native Blob URL lookup semantics |
 | Fragment anchors, `a[href]`/`area[href]` | Supported; non-fragment `a`/`area` `href` values are kept without rewriting or validation, because the runtime `onLinkClick` in `package-loader.ts` already calls `preventDefault` in the capture phase for every `a[href]`/`area[href]` click and only handles `#fragment`; `javascript:`/`data:`/`vbscript:` remain rejected |
 | Dedicated Workers (requires worker) | Child-created Blob Workers and literal `.js/.mjs` paths, including `new Worker(new URL("./worker.js", import.meta.url), options)`, supported with messaging/transferables/classic/module options |
 | Worker module graph | Local static/literal-dynamic imports become direct Blob edges; cycles rejected. A classic bootstrap imports modules and queues messages until initialization (replayed MessageEvents are synthetic) |
@@ -144,6 +147,8 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 JS files are validated with modern module syntax; classic references cannot depend on sloppy-only syntax such as `with`. Inline handlers are also parsed and cannot depend on top-level `return`. `document.write`, parser-stream timing, module `document.currentScript`, original HTTP paths/import.meta.url, XHR and arbitrary dynamic loading are not transparently compatible. The runtime replays DOMContentLoaded/load once after initial scripts finish. Later application tasks, playback and custom app readiness are outside `session.ready`.
 
 Preparation errors expose `SandboxPackageError.code`: `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`, missing resources, CSS/JS/module restrictions and Blob cycles. Rejected HTML is split into `UNSUPPORTED_HTML_ELEMENT` (base/iframe/frame/frameset/object/embed/applet/portal, `meta http-equiv="refresh"`, `javascript:`/`data:`/`vbscript:` `a`/`area` href), `UNSUPPORTED_HTML_SCRIPT` (unsupported script type, JSON script block with `src`), `UNSUPPORTED_HTML_LINK` (unsupported `rel` token, `href` without `rel`) and `UNSUPPORTED_HTML_FORM` (`action`/`formaction`); messages name the file or pattern. Unsupported runtime operations fail through TypeError, module rejection, resource error or CSP. Successful preparation does not guarantee all game code works; failed initialization rejects ready and destroys the session rather than reporting fake readiness.
+
+When available, `SandboxPackageError.diagnostic.sourcePath` identifies the source file being checked. `diagnostic.issue` distinguishes XHR, SharedWorker and SVG restrictions, with `diagnostic.element` giving the rejected SVG tag. In-thread and Worker preparation expose the same diagnostics. User-facing hosts should use trusted templates and validate source paths against the uploaded manifest before displaying them.
 
 ### Known incompatibilities
 

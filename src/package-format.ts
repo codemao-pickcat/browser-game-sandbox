@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.5.0" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.5.4" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
@@ -23,14 +23,20 @@ export const SANDBOX_PACKAGE_LIMITS = Object.freeze({
   transferTimeoutMs: 30_000,
 });
 
+export interface SandboxPackageDiagnostic {
+  readonly sourcePath?: string;
+  readonly issue?: "xhr" | "shared-worker" | "svg-element" | "svg-event" | "svg-reference" | "svg-css";
+  readonly element?: string;
+}
+
 export class SandboxPackageError extends TypeError {
-  public constructor(public readonly code: string, message: string) {
+  public constructor(public readonly code: string, message: string, public readonly diagnostic?: SandboxPackageDiagnostic) {
     super(message);
     this.name = "SandboxPackageError";
   }
 }
-export function packageError(code: string, message: string): never {
-  throw new SandboxPackageError(code, message);
+export function packageError(code: string, message: string, diagnostic?: SandboxPackageDiagnostic): never {
+  throw new SandboxPackageError(code, message, diagnostic);
 }
 
 export function assertPackagePath(path: string): void {
@@ -117,6 +123,8 @@ export function parseInlineDataUrl(value: string): string | undefined {
   return mediaType.replace(/[\t\n\r]/g, "").trim().toLowerCase() || "text/plain";
 }
 
+const NativeURL = URL;
+
 /** Virtual URL resolution only; never uses the host origin or a network API. */
 export function resolvePackageReference(reference: string, from: string): { path: string; suffix: string } {
   if (typeof reference !== "string" || !reference || reference.trim() !== reference ||
@@ -147,7 +155,7 @@ export function resolvePackageReference(reference: string, from: string): { path
       depth++;
     }
   }
-  const url = new URL(reference, `https://package.invalid/${from}`);
+  const url = new NativeURL(reference, `https://package.invalid/${from}`);
   let path: string;
   try { path = decodeURIComponent(url.pathname.slice(1)); }
   catch { return packageError("INVALID_PATH", `Invalid URL: ${reference}`); }

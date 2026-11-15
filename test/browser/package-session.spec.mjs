@@ -125,6 +125,49 @@ test("real opaque runtime loads a multi-file package, ESM, CSS, images, local fe
   assert.deepEqual(errorsRpc,{codes:["INVALID_PAYLOAD","INVALID_PAYLOAD","INVALID_PAYLOAD"],value:null});
 });
 
+test("packaged audio plays after a click through HTML, Audio and Web Audio", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<audio id="track" src="./audio.wav"></audio>
+      <button id="start" type="button">播放</button>
+      <script type="module" src="./main.js"></script>`,
+    "main.js": `
+      const track = document.querySelector("#track");
+      const asset = "audio.wav";
+      const effect = new Audio("./" + asset + "?v=1#t=0.1");
+      const resolved = new Audio();
+      resolved.src = new URL("./" + asset, import.meta.url).href;
+      const inline = new Audio("data:audio/wav;base64,${wav.toString("base64")}");
+      const remote = new Audio("${origin}/audio-network-probe.wav");
+      document.querySelector("#start").addEventListener("click", () => {
+        const context = new AudioContext();
+        const start = audio => audio.play().then(() => "playing", error => error.name);
+        const webAudio = async () => {
+          await context.resume();
+          const buffer = await context.decodeAudioData(await (await fetch("./audio.wav")).arrayBuffer());
+          const source = context.createBufferSource();
+          source.buffer = buffer;
+          source.connect(context.destination);
+          source.start();
+          return context.state;
+        };
+        window.media = [track, effect, resolved, inline];
+        const playback = [start(track), start(effect), start(resolved), webAudio(), start(inline), start(remote)];
+        window.playback = playback.map(() => "pending");
+        playback.forEach((result, index) => result.then(
+          state => { window.playback[index] = state; },
+          error => { window.playback[index] = error.name; },
+        ));
+      });`,
+    "audio.wav": Array.from(wav),
+  });
+  await frame.locator("#start").click();
+  await expect.poll(() => frame.evaluate(() => window.playback), { timeout: 3000 })
+    .toEqual(["playing", "playing", "playing", "running", "playing", "NotSupportedError"]);
+  await expect.poll(() => frame.evaluate(() => window.media.every(audio => audio.currentTime > 0))).toBe(true);
+  expect(await frame.evaluate(() => window.media[1].currentSrc)).toMatch(/^blob:null\/[^?#]+#t=0\.1$/);
+  expect(received).not.toContain("/audio-network-probe.wav");
+});
+
 test("CSS SVG-view fragments remain quoted, parsed and actually rendered", async ({ page }) => {
   const fragment="#svgView(viewBox(0,0,10,10))";
   const frame=await open(page,{
@@ -233,6 +276,27 @@ for(const worker of [false,true]) test(`fallback data survives browser prepare, 
   assert.deepEqual(result.failures,["TypeError","AbortError"]);
   assert.equal(result.origin,"null");
   assert.deepEqual(await page.evaluate(()=>events),["connected","ready"]);
+});
+
+test("SDK preparation preserves the same compatibility diagnostic on the main thread and in a Worker", async ({ page }) => {
+  await page.goto(`${origin}/host`);
+  await page.waitForFunction(() => window.hostReady);
+  const results = await page.evaluate(async () => {
+    const failures = [];
+    for (const worker of [false, true]) {
+      try {
+        await launch({
+          "index.html": '<script src="scripts/library.js"></script>',
+          "scripts/library.js": 'new XMLHttpRequest();',
+        }, "diagnostics", { worker });
+      } catch (error) {
+        failures.push({name: error.name, code: error.code, diagnostic: error.diagnostic});
+      }
+    }
+    return { failures, frames: document.querySelectorAll("iframe").length };
+  });
+  const failure = { name: "SandboxPackageError", code: "UNSUPPORTED_API", diagnostic: { sourcePath: "scripts/library.js", issue: "xhr" } };
+  assert.deepEqual(results, { failures: [failure, failure], frames: 0 });
 });
 
 test("local fetch fails missing prototype keys rather than reading inherited object values",async({page})=>{
@@ -366,6 +430,93 @@ test("child independently rejects fallback auto-resource references after valid-
   assert.match(result.error,/Fallback data supports package GET\/HEAD only/);
   assert.equal(result.frames,0);
   assert.deepEqual(result.events,["connected","ready-error"]);
+});
+
+test("single-argument URL resolves computed package paths for assets and fetch", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": '<script type="module" src="scripts/main.js"></script>',
+    "scripts/main.js": `
+      window.readAsset = async (name) => {
+        const path = "./assets/" + name + "?v=1#part";
+        const url = new URL(path);
+        if (typeof URL.canParse === "function" && !URL.canParse(path)) throw new Error("URL.canParse rejected a package asset");
+        if (typeof URL.parse === "function" && URL.parse(path)?.href !== url.href) throw new Error("URL.parse disagreed with the constructor");
+        return { href: url.href, text: await (await fetch(new URL(url))).text() };
+      };`,
+    "assets/data.txt": "package bytes",
+    "assets/passive.html": "<p>fetch only</p>",
+  });
+  const asset = await frame.evaluate(() => window.readAsset("data.txt"));
+  assert.match(asset.href, /^blob:null\/[^?#]+#part$/);
+  assert.equal(asset.text, "package bytes");
+  for (const name of ["missing.txt", "passive.html", "../../%2e%2e/assets/data.txt"]) {
+    await assert.rejects(frame.evaluate(name => window.readAsset(name), name), /TypeError:/);
+  }
+  const external = `${origin}/computed-url-network-probe`;
+  const behavior = await frame.evaluate(async external => {
+    const blob = URL.createObjectURL(new Blob(["local bytes"]));
+    const local = new URL(blob).href === blob;
+    URL.revokeObjectURL(blob);
+    let fetchError;
+    try { await fetch(new URL(external)); } catch (error) { fetchError = error.code; }
+    return { local, fetchError, explicitBase: new URL("./asset.txt", external).href };
+  }, external);
+  assert.deepEqual(behavior, { local: true, fetchError: "EXTERNAL_URL", explicitBase: `${origin}/asset.txt` });
+  assert.ok(!received.includes("/computed-url-network-probe"));
+});
+
+test("computed module URLs resolve from external and inline script locations", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<script type="module" src="scripts/main.js"></script><script type="module">
+      const path = ['./', 'root.txt'].join('');
+      window.inlineBytes = await (await fetch(new URL(path, import.meta.url))).text();
+    </script>`,
+    "scripts/main.js": `
+      const filename = 'module.txt';
+      const moduleUrl = new URL('./' + filename, import.meta.url);
+      window.moduleBytes = await (await fetch(moduleUrl)).text();
+    `,
+    "root.txt": "root bytes",
+    "scripts/module.txt": "module bytes",
+  });
+  assert.deepEqual(await frame.evaluate(() => [window.inlineBytes, window.moduleBytes]), ["root bytes", "module bytes"]);
+});
+
+test("URL with the work document's base safely resolves package paths", async ({ page }) => {
+  const frame = await open(page, {"index.html": "<p>ready</p>", "url-base-probe.txt": "root bytes"});
+  const result = await frame.evaluate(async () => {
+    const filename = "./url-base-probe.txt";
+    const documentUrl = new URL(filename, document.baseURI);
+    const locationUrl = new URL(filename, new URL(location.href));
+    return await Promise.all([documentUrl, locationUrl].map(async url => (await fetch(url)).text()));
+  });
+  assert.deepEqual(result, ["root bytes", "root bytes"]);
+  assert.ok(!received.includes("/url-base-probe.txt"));
+});
+
+test("local fetch reads live Blob URLs created by the work document", async ({ page }) => {
+  const frame = await open(page, {"index.html": "<p>ready</p>"});
+  const result = await frame.evaluate(async () => {
+    const url = new URL(URL.createObjectURL(new Blob(["work bytes"], {type: "text/plain"})));
+    url.hash = "#fragment";
+    const head = await fetch(new Request(url, {method: "HEAD"}));
+    const text = await (await fetch(url)).text();
+    const rejects = async (input, init) => fetch(input, init).then(() => false, () => true);
+    const rejected = await Promise.all([
+      rejects(url, {method: "POST"}),
+      rejects(new URL("blob:null/not-issued-by-this-document")),
+    ]);
+    url.search = "?v=1";
+    rejected.push(await rejects(url));
+    url.search = "";
+    URL.revokeObjectURL(url);
+    rejected.push(await rejects(url));
+    const controller = new AbortController();
+    controller.abort();
+    const abort = await fetch(url, {signal: controller.signal}).catch(error => error.name);
+    return { text, head: [head.headers.get("Content-Type"), head.headers.get("Content-Length"), await head.text()], rejected, abort };
+  });
+  assert.deepEqual(result, {text: "work bytes", head: ["text/plain", "10", ""], rejected: [true, true, true, true], abort: "AbortError"});
 });
 
 test("native Blob registry rejects appended query while accepting a fragment", async ({ page }) => {

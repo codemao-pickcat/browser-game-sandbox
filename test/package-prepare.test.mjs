@@ -34,7 +34,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.5.0");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.5.4");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -154,11 +154,20 @@ test("unsubstituted template literals resolve module, Worker and asset reference
 
 for (const [script, code] of [
   ['import(`./${name}.js`)', "DYNAMIC_IMPORT"],
-  ['new URL(`./${name}.png`, import.meta.url)', "DYNAMIC_RESOURCE"],
   ['new Worker(new URL(`./${name}.js`, import.meta.url))', "DYNAMIC_RESOURCE"],
   ['export * from `./child.js`', "INVALID_JAVASCRIPT"],
 ]) test(`template resource restrictions still apply: ${script}`, async () => {
   await assert.rejects(prepareSandboxPackage(await input({ "index.html": `<script type="module">${script}</script>` })), { code });
+});
+
+test("computed asset URLs stay in document modules and require literals inside Worker graphs", async () => {
+  const script = 'const name = "image"; new URL(`./${name}.png`, import.meta.url)';
+  const prepared = await prepareSandboxPackage(await input({ "index.html": `<script type="module">${script}</script>` }));
+  assert.ok(compiledHtml(snapshotPreparedPackage(prepared).plan).includes(script));
+  await assert.rejects(prepareSandboxPackage(await input({
+    "index.html": '<script>new Worker("./worker.js")</script>',
+    "worker.js": script,
+  })), { code: "DYNAMIC_RESOURCE" });
 });
 
 test("inline data URLs preserve the enclosing raw HTML elements after literal decoding", async () => {

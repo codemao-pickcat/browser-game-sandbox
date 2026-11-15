@@ -56,7 +56,7 @@ The trusted host creates an iframe with a stable, cross-origin game origin and s
 
 ## CI
 
-This SDK is maintained inside the MOSS monorepo and consumed through a repository file dependency, so it has no standalone workflow or publish job. The root `checks` workflow builds and tests the SDK first (`npm ci`, `npm test`, type checks, package verification and the Chromium sandbox suite) and then installs the API dependency. Bump the package version and rebuild the SDK here when its public surface changes; publishing to a registry is a separate, deliberate release step.
+This repository runs its own Node, package, Vue fixture and Chromium checks. Tagged releases use the standalone publish workflow. MOSS pins a commit from this repository as a Git submodule and builds it as a local file dependency for the API and player.
 
 - The public package surface is the ESM root host API plus trusted `game.preload.js` and `package.runtime.js` platform assets, not a content SDK. There is no Vue peer dependency.
 

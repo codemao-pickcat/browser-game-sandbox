@@ -14,6 +14,8 @@ scope.onmessage = event => {
     const snapshot: PackageSnapshot = { ...verified, plan: compileVerifiedPackage(verified) };
     scope.postMessage({ type: "prepared", snapshot }, Object.values(snapshot.files).map(bytes => bytes.buffer as ArrayBuffer));
   } catch (error) {
-    scope.postMessage({ type: "error", code: error instanceof SandboxPackageError ? error.code : "PREPARE_FAILED", message: error instanceof Error ? error.message : "Package preparation failed" });
+    scope.postMessage(error instanceof SandboxPackageError
+      ? { type: "error", code: error.code, message: error.message, diagnostic: error.diagnostic }
+      : { type: "error", code: "PREPARE_FAILED", message: error instanceof Error ? error.message : "Package preparation failed" });
   }
 };

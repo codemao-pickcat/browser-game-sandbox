@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.5.0）
+# 离线作品包运行时（0.5.4）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.5.4"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -112,14 +112,17 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 静态 `script src`、inline script | 支持；在完整 DOM 装载后按文档顺序执行；`async/defer` 归一为顺序执行 |
 | `type="module"`（外部/内联） | 支持，含静态 import/export、循环引用、top-level await |
 | `import("./literal.js")` | 支持普通字符串和无插值模板字符串；含插值或计算表达式、bare specifier、import attributes/JSON modules、module query/hash 变体明确拒绝。静态 `import`/`export … from` 按 JavaScript 语法使用普通字符串 |
-| `new URL("./asset", import.meta.url)` | 支持已知非 HTML literal 资源（含原有 JSON/TXT/BIN），重写为子文档创建的 Blob URL；动态参数、HTML 与 fallback Blob 资源明确拒绝，后两者请使用包内相对 fetch |
+| `new URL(path, import.meta.url)` | 按模块文件目录解析已知非 HTML 资源，包括计算所得的字符串路径。内联模块以根 `index.html` 为基准。Worker 图及静态 Worker 脚本入口使用字面量 |
+| `new URL(path)`、`new URL(path, document.baseURI)` | 作品文档中的字符串路径以根 `index.html` 为基准。查询参数从包内 Blob URL 去除，片段保留。支持时 `URL.parse` 和 `URL.canParse` 使用相同的路径解析；HTML 和 fallback 数据可用包内 `fetch(path)` 读取 |
 | stylesheet link、style、style 属性 | 支持；解析并重写 CSS `url()`、`@import`、`image-set()` URL，通过 CSS 字符串序列化保留引用和转义，包括 `#svgView(viewBox(...))` 等带括号 fragment；CSS Blob 依赖环拒绝 |
 | 图片、字体、音频、视频的静态资源引用 | 支持已知非 HTML 资源，fallback 数据不得作为自动资源引用。`srcset`/`imagesrcset` 候选按 URL 和描述符分别处理（如 `1.5x`、`100w`）；`background` 为单 URL。包内资源物化为 Blob，内联 `data:` 保留，外部 URL 报 `EXTERNAL_URL`。保留的 stylesheet 链接上的 `imagesrcset` 直接删除。字节有效不代表浏览器支持该编码 |
+| `new Audio("./audio/loop.mp3")` | `Audio` 的包内路径字符串（含运行时拼接）从根 `index.html` 解析，已知媒体文件使用子 iframe 的 Blob URL，保留媒体片段。动态设置 `audio.src` 时可用字面量 `new URL("./loop.mp3", import.meta.url).href` 或自行创建 Blob URL。请在作品内部的真实点击或触摸中调用 `play()` |
 | 内联 `data:` URL | `src`/`srcset`/`poster`/`background`、CSS `url()`/`image-set()` 和字面量 `new URL` 的非执行资源位置允许，保留原 URL，不解码为包内文件；`img-src`/`font-src`/`media-src` 允许 `data:`，浏览器在图片上下文渲染 SVG 时不执行脚本。脚本、模块、Worker、样式表（含 `@import`）与直接 `fetch()` 不接受 `data:`，报 `INLINE_RESOURCE`；链接导航仍拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG。`style` 属性按 CSS 声明列表校验，与表现属性一样只允许规定属性引用文档内部 `url(#id)`，不接受无法解析的 CSS 或活跃协议；仍不支持 `<style>`、`foreignObject`、`image`/`use` 等嵌入形式 |
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
 | `fetch("data.json")`、`fetch("model.glb")`、运行时计算包内相对路径 | 本地兼容层从完整文件集提供 GET/HEAD，返回原始包字节；HEAD 保留 MIME/字节长度且无响应体，fallback MIME 为 `application/octet-stream`。query/hash 不改变读取的文件或字节；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
 | `fetch(new URL("./data.json", import.meta.url))` | 支持重写后的本地 Blob 对应原始字节；不存在的文件/外部 URL/非 GET-HEAD 明确 TypeError，无网络回退 |
+| `fetch(new URL(URL.createObjectURL(blob)))` | 支持作品文档用 `URL.createObjectURL` 创建且仍有效的 Blob，GET/HEAD 在 iframe 内直接返回字节或响应头。片段可用，查询参数按浏览器 Blob URL 规则处理 |
 | `window.game.storageGet/Set/Delete` | 提供 adapter 时支持，严格对象 schema；不提供 adapter 时不暴露存储方法 |
 | fragment anchor 与 `a[href]`/`area[href]` | 支持；`a`/`area` 的非 fragment `href` 直接放行，既不重写也不报错，因为运行期 `package-loader.ts` 的 `onLinkClick` 已在捕获阶段对所有 `a[href]`/`area[href]` 无条件 `preventDefault`，只处理 `#fragment`；`javascript:`/`data:`/`vbscript:` 仍拒绝 |
 | 外部 URL 与 CDN 依赖 | 静态可识别的资源引用拒绝，不回退联网；请先打包成本地文件 |
@@ -138,6 +141,8 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。
 
 不支持任意 ZIP 透明兼容。`SandboxPackageError.code` 区分 `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`、缺失资源、CSS/JS/模块不兼容与资源环等错误；被拒的 HTML 细分为 `UNSUPPORTED_HTML_ELEMENT`（base/iframe/frame/frameset/object/embed/applet/portal、`meta http-equiv="refresh"`、`a`/`area` 的 `javascript:`/`data:`/`vbscript:` href）、`UNSUPPORTED_HTML_SCRIPT`（不支持的 script type、带 `src` 的 JSON script 块）、`UNSUPPORTED_HTML_LINK`（不支持的 `rel` token、有 `href` 但缺 `rel`）、`UNSUPPORTED_HTML_FORM`（`action`/`formaction`）；错误消息标明对应文件或模式。动态不支持的操作通过 TypeError、模块执行拒绝、资源 error 或 CSP 报告显式失败。准备成功不等于所有用户代码一定能成功运行；运行初始化失败会拒绝 `ready` 并销毁会话，不会 fake-ready。
+
+可定位时，`SandboxPackageError.diagnostic.sourcePath` 标明发生错误的源文件。`diagnostic.issue` 区分 XHR、SharedWorker 及各类 SVG 限制，`diagnostic.element` 记录被拒的 SVG 标签。主线程和 Worker 准备返回相同的诊断信息。宿主向作者展示时，使用可信提示模板并根据上传清单校验源文件路径。
 
 ### 已知不兼容
 
