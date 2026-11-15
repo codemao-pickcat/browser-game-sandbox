@@ -63,6 +63,69 @@ async function open(page, sources, scope = "a", prepareOptions, sessionOptions, 
   return page.frames().find(frame => frame.parentFrame() === page.mainFrame());
 }
 
+test("offline SystemJS handles startup, named virtual modules, and lazy relative imports", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<link rel="apple-touch-icon" href="${origin}/apple-touch-network-probe.png">
+      <button id="step">ready</button><script>window.order = [];</script>
+      <script src="./registry.js"></script>
+      <script type="systemjs-importmap" src="./config/map.json"></script>
+      <script type="systemjs-module" src="import:entry"></script>
+      <script>order.push('after');</script>`,
+    "config/map.json": '{"imports":{"entry":"../modules/main.js","text":"../modules/text.js"}}',
+    "registry.js": `System.register('virtual:///named/dependency.js', [], publish => ({ execute() { publish('step', 1); } }));
+      System.register('virtual:///named/wrapper.js', ['./dependency.js'], publish => ({ setters: [module => publish('step', module.step)], execute() {} }));`,
+    "modules/main.js": `System.register(['text', 'virtual:///named/wrapper.js'], (_export, context) => {
+      let text, next;
+      return { setters: [module => text = module.text, module => next = module.step], async execute() {
+        const button = document.querySelector('#step');
+        const resource = new URL('./marker.txt', context.meta.url);
+        order.push(await (await fetch(resource)).text());
+        button.textContent = text;
+        button.onclick = async () => { button.textContent = (await context.import('./step.js')).step + next; };
+      }};
+    });`,
+    "modules/text.js": `System.register([], publish => ({ execute() { publish('text', '0'); } }));`,
+    "modules/step.js": `System.register([], publish => ({ execute() { publish('step', 10); } }));`,
+    "modules/marker.txt": "module",
+  });
+  assert.deepEqual(await frame.evaluate(() => order), ["module", "after"]);
+  assert.equal(await frame.locator("#step").textContent(), "0");
+  await frame.locator("#step").click();
+  await frame.waitForFunction(() => document.querySelector("#step").textContent === "11");
+  assert.equal(await frame.locator('link[rel="apple-touch-icon"]').count(), 0);
+  assert.equal(received.includes("/apple-touch-network-probe.png"), false);
+});
+
+test("SystemJS classic startup shares named bundle exports when an import map aliases its name", async ({ page }) => {
+  const frame = await open(page, {
+    "index.html": `<script type="systemjs-importmap">{"imports":{"sample/counter":"./modules/bundle.js"}}</script>
+      <script src="./modules/bootstrap.js"></script>`,
+    "modules/bootstrap.js": `globalThis.boot = System.import('./bundle.js').then(async first => {
+      const named = await System.import(System.resolve('sample/counter'));
+      first.increment();
+      let blocked;
+      try { await System.import(new URL('/systemjs-network-probe', '${origin}').href); }
+      catch (error) { blocked = error instanceof TypeError; }
+      return { first: first.count, named: named.count, executions, blocked };
+    });`,
+    "modules/bundle.js": `System.register('sample/counter', [], publish => ({ execute() {
+      globalThis.executions = (globalThis.executions ?? 0) + 1;
+      publish('count', executions);
+      publish('increment', () => publish('count', 2));
+    } }));`,
+  });
+  assert.deepEqual(await frame.evaluate(() => boot), { first: 2, named: 2, executions: 1, blocked: true });
+  assert.equal(received.includes("/systemjs-network-probe"), false);
+});
+
+test("a missing SystemJS startup dependency fails readiness", async ({ page }) => {
+  await assert.rejects(() => open(page, {
+    "index.html": '<script type="systemjs-module" src="./entry.js"></script>',
+    "entry.js": 'System.register(["./missing.js"], () => ({ setters: [null], execute() {} }));',
+  }), /compiled package script/);
+  assert.deepEqual(await page.evaluate(() => events), ["connected", "ready-error"]);
+});
+
 test("repeated imports of one locked npm specifier share a module instance", async ({ page }) => {
   const artifact = 'globalThis.loads = (globalThis.loads ?? 0) + 1; export const value = { ready: true };';
   const path = `__moss_npm__/${createHash("sha256").update(artifact).digest("hex")}.mjs`;

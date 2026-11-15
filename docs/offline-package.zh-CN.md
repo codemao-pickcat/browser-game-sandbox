@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.6.1）
+# 离线作品包运行时（0.7.0）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.6.1"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.7.0"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -146,7 +146,7 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 其他 `meta http-equiv="..."` | 整条 `meta` 元素丢弃：Blob/srcdoc 文档没有可供这些指令覆盖的 HTTP 响应头 |
 | SRI 与其他惰性属性、`nomodule` | `integrity/ping/manifest/codebase/archive/srcdoc` 在任何元素上直接删除；classic `<script nomodule>` 整个元素从文档移除，其 `src` 不重写、不物化，也不参与模块解析（只保留字节供包内 fetch），被移除的 `nomodule` 内联代码同样丢弃；`nomodule` 对 module 脚本无意义，故 `type="module" nomodule` 的脚本继续执行，只删除该属性 |
 | 表单提交（`action`/`formaction`） | 明确拒绝（`UNSUPPORTED_HTML_FORM`）；布局与控件仍可用 |
-| `link rel=icon/preload/prefetch/modulepreload/manifest`、`preconnect/dns-prefetch` | 编译时删除，不校验也不重写 `href`，因此 `data:,` favicon、缺失文件和外部 URL 均不阻断准备 |
+| `link rel=icon/apple-touch-icon/preload/prefetch/modulepreload/manifest`、`preconnect/dns-prefetch` | 编译时删除，不校验也不重写 `href`，因此 `data:,` favicon、缺失文件和外部 URL 均不阻断准备 |
 | `rel` 组合写法（如 `rel="stylesheet preload"`） | 不区分 token 大小写与顺序；与 `stylesheet` 组合时只保留 stylesheet，`href` 仍按样式表引用校验；未知 token（如 `shortcut`）仍拒绝（`UNSUPPORTED_HTML_LINK`） |
 
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。
@@ -154,6 +154,21 @@ JS 文件采用现代 ES module 语法校验；即使以 classic script 引用�
 不支持任意 ZIP 透明兼容。`SandboxPackageError.code` 区分 `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`、缺失资源、CSS/JS/模块不兼容与资源环等错误；被拒的 HTML 细分为 `UNSUPPORTED_HTML_ELEMENT`（base/iframe/frame/frameset/object/embed/applet/portal、`meta http-equiv="refresh"`、`a`/`area` 的 `javascript:`/`data:`/`vbscript:` href）、`UNSUPPORTED_HTML_SCRIPT`（不支持的 script type、带 `src` 的 JSON script 块）、`UNSUPPORTED_HTML_LINK`（不支持的 `rel` token、有 `href` 但缺 `rel`）、`UNSUPPORTED_HTML_FORM`（`action`/`formaction`）；错误消息标明对应文件或模式。动态不支持的操作通过 TypeError、模块执行拒绝、资源 error 或 CSP 报告显式失败。准备成功不等于所有用户代码一定能成功运行；运行初始化失败会拒绝 `ready` 并销毁会话，不会 fake-ready。
 
 可定位时，`SandboxPackageError.diagnostic.sourcePath` 标明发生错误的源文件。`diagnostic.issue` 区分 XHR、SharedWorker 及各类 SVG 限制，`diagnostic.element` 记录被拒的 SVG 标签。主线程和 Worker 准备返回相同的诊断信息。宿主向作者展示时，使用可信提示模板并根据上传清单校验源文件路径。
+
+### 离线 SystemJS
+
+根 HTML 可通过 `systemjs-importmap` 或 `systemjs-module` 启用 SDK 提供的 SystemJS 6.15.1。以下入口在模块执行完成后继续后面的脚本和 `ready`。
+
+```html
+<script type="systemjs-importmap" src="./config/imports.json"></script>
+<script type="systemjs-module" src="import:entry"></script>
+```
+
+`config/imports.json` 可写成 `{"imports":{"entry":"../modules/main.js"}}`。内联 map 以 `index.html` 为基准，外部 map 以其包内文件为基准。`imports` 支持精确的裸标识符，目标为包内 `.js` 或 `.mjs`。前缀、作用域、扩展映射选项和 query/hash 不支持。`systemjs-module` 的 `src` 也可直接写包内脚本路径。
+
+支持命名和匿名 `System.register`、`System.import()` 与模块的上下文动态导入。匿名注册放在包内脚本文件中。带虚拟 URL 的命名注册可引用同一虚拟目录中已注册的模块。常规脚本自行调用 `System.import()` 时，独立异步链按常规脚本生命周期执行，需等待入口完成的作品可使用 `systemjs-module`。准备阶段校验 map、入口及包内脚本，模块图解析也可能在播放阶段报告错误。
+
+SystemJS 仅从已校验的包内 JavaScript 与已注册模块加载。CSS、媒体等资源复用既有包内 API。作品自带的加载器脚本也接受相同的 JavaScript 检查。
 
 ### 已知不兼容
 

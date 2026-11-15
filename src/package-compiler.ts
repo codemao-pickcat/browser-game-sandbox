@@ -5,7 +5,7 @@ import { simple } from "acorn-walk";
 import { isNpmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 import {
   SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError,
-  moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest,
+  isSystemJsAlias, moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
 } from "./package-format.js";
@@ -31,7 +31,7 @@ const MARKER = "__SANDBOX_PACKAGE_ASSET_";
 // every Blob URL already exists before user scripts run. `manifest` is inert for
 // same reason: the reference document is never fetched or installed. Favicons
 // likewise have no visible effect inside the iframe.
-const INERT_LINK_RELATIONS: ReadonlySet<string> = new Set(["preload", "prefetch", "modulepreload", "preconnect", "dns-prefetch", "manifest", "icon"]);
+const INERT_LINK_RELATIONS: ReadonlySet<string> = new Set(["preload", "prefetch", "modulepreload", "preconnect", "dns-prefetch", "manifest", "icon", "apple-touch-icon"]);
 // Attributes that carry URLs or documents no offline document can ever use: an
 // integrity check against a rewritten Blob, a beacon, a cached manifest, plugin
 // code base, archive fallback, or a nested document source. Dropping them keeps
@@ -117,6 +117,8 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   const markers: { asset: string; suffix: string; worker?: boolean }[] = [];
   const workerPaths = new Set<string>();
   const classicPaths = new Set<string>();
+  let systemJsImports: Record<string, string> | undefined;
+  const systemJsEntries = new Set<string>();
   // Legacy scripts removed with their nomodule tag keep their bytes as inert
   // fetch-only data: nothing can load them, so their syntax must not fail prepare.
   const droppedScriptPaths = new Set<string>();
@@ -374,7 +376,41 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
       try { return resolvePackageReference(value, "index.html").path; }
       catch { return undefined; }
     };
-    const visit = (node: HtmlNode): void => {
+    const scriptText = (node: DefaultTreeAdapterMap["element"]): string => node.childNodes
+      .filter(child => child.nodeName === "#text").map(child => (child as DefaultTreeAdapterMap["textNode"]).value).join("");
+    const systemJsFile = (src: string, from: string): string => {
+      const path = reference(src, from, "fetch");
+      if (isNpmPackagePath(path)) packageError("UNSUPPORTED_MODULE", "SystemJS imports must use uploaded scripts");
+      if (/[?#]/.test(src)) packageError("UNSUPPORTED_REFERENCE", "SystemJS modules do not accept query or fragment variants");
+      if (knownResourceMime(path) !== "text/javascript") packageError("UNSUPPORTED_REFERENCE", "SystemJS modules must use .js or .mjs files");
+      classicPaths.add(path);
+      return path;
+    };
+    const readSystemJsMap = (node: DefaultTreeAdapterMap["element"], src: string | undefined) => {
+      const from = src === undefined ? "index.html" : reference(src, "index.html", "fetch");
+      if (src !== undefined && (knownResourceMime(from) !== "application/json" || /[?#]/.test(src) || scriptText(node).trim())) {
+        packageError("UNSUPPORTED_HTML_SCRIPT", "SystemJS import map src must reference a package JSON file");
+      }
+      const imports = systemJsImports ??= Object.create(null);
+      inPackageSource(from, () => {
+        let parsed: unknown;
+        const source = src === undefined ? scriptText(node) : text(from);
+        try { parsed = JSON.parse(source); }
+        catch { return packageError("UNSUPPORTED_MODULE", "Invalid SystemJS import map JSON"); }
+        const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+        if (!isRecord(parsed) || Object.keys(parsed).some(key => key !== "imports") ||
+            (parsed.imports !== undefined && !isRecord(parsed.imports))) {
+          return packageError("UNSUPPORTED_MODULE", "SystemJS import maps support an imports object with exact package aliases");
+        }
+        for (const [name, target] of Object.entries(parsed.imports ?? {})) {
+          if (!isSystemJsAlias(name) || typeof target !== "string" || Object.hasOwn(imports, name)) {
+            packageError("UNSUPPORTED_MODULE", "Invalid or duplicate SystemJS package alias");
+          }
+          imports[name] = systemJsFile(target as string, from);
+        }
+      });
+    };
+    const visit = (node: HtmlNode, inTemplate = false): void => {
       if ("tagName" in node) {
         const tag = node.tagName.toLowerCase();
         let linkKind: "css" | "asset" = "asset";
@@ -396,6 +432,27 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         }
         if (tag === "script") {
           const type = attr("type")?.value.toLowerCase() ?? "";
+          if (!inTemplate && type === "systemjs-importmap") {
+            readSystemJsMap(node, attr("src")?.value);
+            dropped.add(node);
+            return;
+          }
+          if (!inTemplate && type === "systemjs-module") {
+            const src = attr("src");
+            if (!src?.value || scriptText(node).trim()) return packageError("UNSUPPORTED_HTML_SCRIPT", "SystemJS module tags require src and no inline code");
+            systemJsImports ??= Object.create(null);
+            if (src.value.startsWith("import:")) {
+              const alias = src.value.slice("import:".length);
+              if (!isSystemJsAlias(alias)) packageError("UNSUPPORTED_MODULE", "Invalid SystemJS entry alias");
+              systemJsEntries.add(alias);
+            } else {
+              src.value = `/${systemJsFile(src.value, "index.html").split("/").map(encodeURIComponent).join("/")}`;
+            }
+            // The child's loader reads this as a specifier. The browser does
+            // not load network or Blob URLs from this script tag.
+            node.attrs = [{ name: "type", value: type }, src];
+            return;
+          }
           if (!["", "text/javascript", "application/javascript", "module", "application/json"].includes(type)) packageError("UNSUPPORTED_HTML_SCRIPT", `Unsupported script type: ${type}`);
           if (attr("type")) attr("type")!.value = type;
           // `nomodule` only suppresses executing classic scripts; a module script
@@ -414,8 +471,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
           }
           if (attr("src") && type === "application/json") packageError("UNSUPPORTED_HTML_SCRIPT", "JSON script blocks must be inline");
           if (!attr("src") && type !== "application/json") {
-            const scriptText = node.childNodes.filter(child => child.nodeName === "#text").map(child => (child as DefaultTreeAdapterMap["textNode"]).value).join("");
-            const transformed = transformJs(scriptText, "index.html", type === "module");
+            const transformed = transformJs(scriptText(node), "index.html", type === "module");
             node.childNodes = [{ nodeName: "#text", value: transformed, parentNode: node }];
           }
         }
@@ -446,15 +502,18 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         }
       }
       if ("childNodes" in node) {
-        for (const child of node.childNodes) visit(child);
+        for (const child of node.childNodes) visit(child, inTemplate);
         dropMarked(node);
       }
       if ("content" in node && node.content) {
-        visit(node.content);
+        visit(node.content, true);
         dropMarked(node.content);
       }
     };
     visit(doc);
+    for (const alias of systemJsEntries) if (!Object.hasOwn(systemJsImports!, alias)) {
+      packageError("UNSUPPORTED_MODULE", "SystemJS entry alias is missing from the import map");
+    }
     return serialize(doc);
   };
   const resources: CompiledResource[] = [];
@@ -539,7 +598,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   };
   for (const path of byPath.keys()) checkCycle(path);
   for (const path of workerByPath.keys()) checkCycle(path, true);
-  const plan = { resources, workers, html };
+  const plan = { resources, workers, html, ...(systemJsImports && { systemJsImports }) };
   if (encoder.encode(JSON.stringify(plan)).byteLength > LIMITS.compiledBytes) packageError("PACKAGE_TOO_LARGE", "Compiled package budget exceeded");
   return plan;
 }

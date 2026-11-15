@@ -9,7 +9,7 @@ import {
 const manifest: SandboxPackageManifest = { formatVersion: 1, entrypoint: "index.html", files: { "index.html": { sha256: "0".repeat(64), size: 1 } } };
 const input: SandboxPackageInput = { manifest, files: { "index.html": new Uint8Array([1]) } };
 const prepared: Promise<PreparedSandboxPackage> = prepareSandboxPackage(input);
-const version: "0.6.1" = SANDBOX_RUNTIME_VERSION;
+const version: "0.7.0" = SANDBOX_RUNTIME_VERSION;
 const permissions: readonly SandboxPackagePermission[] = normalizeSandboxPackagePermissions(["eval"]);
 const clipboard: SandboxClipboardAdapter = { async readText(signal: AbortSignal) { signal.throwIfAborted(); return "text"; } };
 const permission: SandboxPackagePermission = SANDBOX_PACKAGE_PERMISSIONS[0];

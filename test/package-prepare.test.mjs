@@ -34,7 +34,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.6.1");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.7.0");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -76,6 +76,42 @@ test("combined rel token lists keep the direct relation and drop only the hint t
   assert.equal(html.match(/<link/g)?.length, 2);
   assert.doesNotMatch(html, /preload|prefetch|icon/i);
   assert.deepEqual(snapshot.plan.resources.map(resource => resource.path).sort(), ["a.css", "b.css"]);
+});
+
+test("Apple touch icons are inert and SystemJS maps resolve in the declaring file", async () => {
+  const prepared = await prepareSandboxPackage(await input({
+    "index.html": '<link rel="APPLE-TOUCH-ICON" href="https://external.invalid/icon.png"><link rel="stylesheet apple-touch-icon" href="styles.css"><script type="systemjs-importmap" src="config/imports.json"></script><script type="systemjs-module" src="import:entry"></script>',
+    "styles.css": "body{margin:0}",
+    "config/imports.json": '{"imports":{"entry":"../src/entry.js"}}',
+    "src/entry.js": 'System.register([], () => ({ execute() {} }));',
+  }));
+  const { plan } = snapshotPreparedPackage(prepared);
+  const html = plan.html.map(part => typeof part === "string" ? part : "[asset]").join("");
+  assert.match(html, /rel="stylesheet" href="\[asset\]"/);
+  assert.doesNotMatch(html, /apple-touch-icon|external\.invalid|systemjs-importmap/);
+  assert.match(html, /type="systemjs-module" src="import:entry"/);
+  assert.deepEqual({ ...plan.systemJsImports }, { entry: "src/entry.js" });
+});
+
+test("SystemJS preparation rejects external maps, invalid targets, unsupported map options and ordinary forbidden APIs", async () => {
+  const base = {
+    "index.html": '<script type="systemjs-importmap" src="map.json"></script><script type="systemjs-module" src="import:entry"></script>',
+    "map.json": '{"imports":{"entry":"./entry.js"}}',
+    "entry.js": "System.register([], () => ({ execute() {} }));",
+  };
+  for (const [changes, code, sourcePath] of [
+    [{ "index.html": '<script type="systemjs-importmap" src="https://external.invalid/map.json"></script>' }, "EXTERNAL_URL", "index.html"],
+    [{ "map.json": '{"imports":{"entry":"https://external.invalid/module.js"}}' }, "EXTERNAL_URL", "map.json"],
+    [{ "map.json": '{"imports":{"entry":"./missing.js"}}' }, "MISSING_RESOURCE", "map.json"],
+    [{ "map.json": '{"imports":{"entry":"./data.json"}}', "data.json": "{}" }, "UNSUPPORTED_REFERENCE", "map.json"],
+    [{ "map.json": '{"imports":{"prefix/":"./src/"}}' }, "UNSUPPORTED_MODULE", "map.json"],
+    [{ "map.json": '{"scopes":{}}' }, "UNSUPPORTED_MODULE", "map.json"],
+    [{ "map.json": '{"imports":{}}' }, "UNSUPPORTED_MODULE", "index.html"],
+    [{ "entry.js": 'System.register([], () => ({ execute() { new XMLHttpRequest(); } }));' }, "UNSUPPORTED_API", "entry.js"],
+  ]) {
+    await assert.rejects(() => input({ ...base, ...changes }).then(prepareSandboxPackage),
+      error => error.code === code && error.diagnostic?.sourcePath === sourcePath);
+  }
 });
 
 test("CDN preload-style hints are scrubbed instead of failing as external dependencies", async () => {

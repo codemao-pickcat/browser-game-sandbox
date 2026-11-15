@@ -2,6 +2,7 @@ import { SandboxBridgeClient } from "./client.js";
 import type { SandboxGameApiBindings } from "./game-api-config.js";
 import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSnapshot, type ResourcePart } from "./package-format.js";
 import { installMemoryStorage } from "./package-web-storage.js";
+import { installPackageSystemJs } from "./package-systemjs.js";
 import type { SandboxPlayerProfile } from "./package-player-profile.js";
 
 /** Runs only in the opaque child, after every byte has been received/verified. */
@@ -237,7 +238,23 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
       link.addEventListener("error", () => reject(new TypeError("Offline stylesheet failed to load")), { once: true });
     }));
     await Promise.all(stylesheetLoads);
+    const importSystemJs = snapshot.plan.systemJsImports && await installPackageSystemJs({
+      imports: snapshot.plan.systemJsImports,
+      scriptUrl: path => byPath.get(path)?.mime === "text/javascript" ? assetUrl(path) : undefined,
+      scriptPath: url => filesByBlobUrl.get(url.split(/[?#]/, 1)[0]!),
+      createRuntimeUrl(source) {
+        const url = createObjectURL(new Blob([source], { type: "text/javascript" }));
+        inlineModuleUrls.push(url);
+        return url;
+      },
+    });
     for (const { script, marker } of placeholders) {
+      if (script.type === "systemjs-module" && importSystemJs) {
+        await importSystemJs(script.getAttribute("src")!);
+        marker.remove();
+        if (initializationError) throw initializationError;
+        continue;
+      }
       const executable = document.createElement("script");
       for (const { name, value } of script.attributes) if (name !== "async" && name !== "defer") executable.setAttribute(name, value);
       executable.textContent = script.textContent;
