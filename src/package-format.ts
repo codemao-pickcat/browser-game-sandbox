@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.5.3" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.5.4" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
@@ -23,14 +23,20 @@ export const SANDBOX_PACKAGE_LIMITS = Object.freeze({
   transferTimeoutMs: 30_000,
 });
 
+export interface SandboxPackageDiagnostic {
+  readonly sourcePath?: string;
+  readonly issue?: "xhr" | "shared-worker" | "svg-element" | "svg-event" | "svg-reference" | "svg-css";
+  readonly element?: string;
+}
+
 export class SandboxPackageError extends TypeError {
-  public constructor(public readonly code: string, message: string) {
+  public constructor(public readonly code: string, message: string, public readonly diagnostic?: SandboxPackageDiagnostic) {
     super(message);
     this.name = "SandboxPackageError";
   }
 }
-export function packageError(code: string, message: string): never {
-  throw new SandboxPackageError(code, message);
+export function packageError(code: string, message: string, diagnostic?: SandboxPackageDiagnostic): never {
+  throw new SandboxPackageError(code, message, diagnostic);
 }
 
 export function assertPackagePath(path: string): void {

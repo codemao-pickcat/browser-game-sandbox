@@ -278,6 +278,27 @@ for(const worker of [false,true]) test(`fallback data survives browser prepare, 
   assert.deepEqual(await page.evaluate(()=>events),["connected","ready"]);
 });
 
+test("SDK preparation preserves the same compatibility diagnostic on the main thread and in a Worker", async ({ page }) => {
+  await page.goto(`${origin}/host`);
+  await page.waitForFunction(() => window.hostReady);
+  const results = await page.evaluate(async () => {
+    const failures = [];
+    for (const worker of [false, true]) {
+      try {
+        await launch({
+          "index.html": '<script src="scripts/library.js"></script>',
+          "scripts/library.js": 'new XMLHttpRequest();',
+        }, "diagnostics", { worker });
+      } catch (error) {
+        failures.push({name: error.name, code: error.code, diagnostic: error.diagnostic});
+      }
+    }
+    return { failures, frames: document.querySelectorAll("iframe").length };
+  });
+  const failure = { name: "SandboxPackageError", code: "UNSUPPORTED_API", diagnostic: { sourcePath: "scripts/library.js", issue: "xhr" } };
+  assert.deepEqual(results, { failures: [failure, failure], frames: 0 });
+});
+
 test("local fetch fails missing prototype keys rather than reading inherited object values",async({page})=>{
   const frame=await open(page,{"index.html":"<p>no data files</p>"});
   const result=await frame.evaluate(async()=>{

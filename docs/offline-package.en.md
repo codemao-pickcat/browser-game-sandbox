@@ -1,4 +1,4 @@
-# Offline package runtime (0.5.3)
+# Offline package runtime (0.5.4)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.5.3", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.5.4", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -147,6 +147,8 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 JS files are validated with modern module syntax; classic references cannot depend on sloppy-only syntax such as `with`. Inline handlers are also parsed and cannot depend on top-level `return`. `document.write`, parser-stream timing, module `document.currentScript`, original HTTP paths/import.meta.url, XHR and arbitrary dynamic loading are not transparently compatible. The runtime replays DOMContentLoaded/load once after initial scripts finish. Later application tasks, playback and custom app readiness are outside `session.ready`.
 
 Preparation errors expose `SandboxPackageError.code`: `INVALID_MANIFEST/INVALID_PATH/INTEGRITY/PACKAGE_TOO_LARGE/INVALID_ENCODING/UNSUPPORTED_REFERENCE`, missing resources, CSS/JS/module restrictions and Blob cycles. Rejected HTML is split into `UNSUPPORTED_HTML_ELEMENT` (base/iframe/frame/frameset/object/embed/applet/portal, `meta http-equiv="refresh"`, `javascript:`/`data:`/`vbscript:` `a`/`area` href), `UNSUPPORTED_HTML_SCRIPT` (unsupported script type, JSON script block with `src`), `UNSUPPORTED_HTML_LINK` (unsupported `rel` token, `href` without `rel`) and `UNSUPPORTED_HTML_FORM` (`action`/`formaction`); messages name the file or pattern. Unsupported runtime operations fail through TypeError, module rejection, resource error or CSP. Successful preparation does not guarantee all game code works; failed initialization rejects ready and destroys the session rather than reporting fake readiness.
+
+When available, `SandboxPackageError.diagnostic.sourcePath` identifies the source file being checked. `diagnostic.issue` distinguishes XHR, SharedWorker and SVG restrictions, with `diagnostic.element` giving the rejected SVG tag. In-thread and Worker preparation expose the same diagnostics. User-facing hosts should use trusted templates and validate source paths against the uploaded manifest before displaying them.
 
 ### Known incompatibilities
 

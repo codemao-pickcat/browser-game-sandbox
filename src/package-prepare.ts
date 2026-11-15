@@ -2,7 +2,7 @@ import { PACKAGE_PREPARE_WORKER_SOURCE } from "./package-prepare-worker-source.j
 import { prepareSandboxPackage as prepareOnThread, verifyPackageBytes, adoptPreparedSnapshot, type PreparedSandboxPackage } from "./package-compiler.js";
 import { SandboxPackageError, type SandboxPackageInput, type PackageSnapshot } from "./package-format.js";
 export { compilePackage, snapshotPreparedPackage, type PreparedSandboxPackage } from "./package-compiler.js";
-export { SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError, type SandboxPackageInput, type SandboxPackageManifest } from "./package-format.js";
+export { SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError, type SandboxPackageDiagnostic, type SandboxPackageInput, type SandboxPackageManifest } from "./package-format.js";
 
 export interface PrepareSandboxPackageOptions {
   /** Parse in an SDK-owned worker. Requires worker-src blob: in the trusted host. */
@@ -41,7 +41,7 @@ export async function prepareSandboxPackage(input: SandboxPackageInput, options:
       worker.onmessage = event => {
         const data = event.data;
         if (data?.type === "prepared") finish(undefined, data.snapshot);
-        else finish(new SandboxPackageError(typeof data?.code === "string" ? data.code : "PREPARE_FAILED", typeof data?.message === "string" ? data.message : "Package worker failed"));
+        else finish(new SandboxPackageError(typeof data?.code === "string" ? data.code : "PREPARE_FAILED", typeof data?.message === "string" ? data.message : "Package worker failed", data?.diagnostic));
       };
       worker.onerror = event => { event.preventDefault(); finish(new Error("Package preparation worker failed")); };
       worker.onmessageerror = () => finish(new Error("Package preparation worker decoding failed"));

@@ -4,7 +4,7 @@ import { parse as parseJs, type Node } from "acorn";
 import { simple } from "acorn-walk";
 import { isNpmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 import {
-  SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION,
+  SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError,
   moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
@@ -54,6 +54,15 @@ const quoteJs = (value: string): string => JSON.stringify(value).replaceAll("<",
 const CSS_IMAGE_SET_FUNCTIONS = new Set(["image-set", "-webkit-image-set"]);
 const cssName = (name: string | undefined): string => name === undefined ? "" : css.ident.decode(name).toLowerCase();
 const SVG_URL_PROPERTIES = new Set(["fill", "stroke", "filter", "clip-path", "mask", "marker-start", "marker-mid", "marker-end", "cursor"]);
+const UNSUPPORTED_SVG_ELEMENTS = new Set(["script", "foreignObject", "image", "use", "style", "animate", "animateMotion", "animateTransform", "set"]);
+
+function inPackageSource<T>(sourcePath: string, compile: () => T): T {
+  try { return compile(); }
+  catch (error) {
+    if (!(error instanceof SandboxPackageError) || error.diagnostic?.sourcePath) throw error;
+    throw new SandboxPackageError(error.code, error.message, { ...error.diagnostic, sourcePath });
+  }
+}
 
 /** No evaluation, DOM, fetch, or other network I/O. Identical validator in Node/browser. */
 export async function prepareSandboxPackage(input: SandboxPackageInput): Promise<PreparedSandboxPackage> {
@@ -156,9 +165,9 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   };
   const decodeText = (path: string): string => {
     const bytes = files[path]!;
-    if (bytes.byteLength > LIMITS.textBytes) return packageError("TEXT_TOO_LARGE", `Text exceeds parser limit: ${path}`);
+    if (bytes.byteLength > LIMITS.textBytes) return packageError("TEXT_TOO_LARGE", `Text exceeds parser limit: ${path}`, { sourcePath: path });
     try { return decoder.decode(bytes); }
-    catch { return packageError("INVALID_ENCODING", `Expected UTF-8: ${path}`); }
+    catch { return packageError("INVALID_ENCODING", `Expected UTF-8: ${path}`, { sourcePath: path }); }
   };
   const text = (path: string): string => {
     const source = decodeText(path);
@@ -249,13 +258,17 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         }
         // Dynamic-code strings stay opaque; eval/Function permissions are
         // enforced at execution by the iframe/Worker CSP, not AST heuristics.
-        if (callee.type === "Identifier" && callee.name === "importScripts") packageError("UNSUPPORTED_DYNAMIC_CODE", `Dynamic code loading is unsupported: ${from}`);
+        if (callee.type === "Identifier" && callee.name === "importScripts") packageError("UNSUPPORTED_DYNAMIC_CODE", `importScripts() is unsupported in offline packages: ${from}`);
       },
       NewExpression(node) {
         const n = node as JsNode;
         const callee = n.callee as JsNode;
         const args = n.arguments as JsNode[];
-        if (callee.type === "Identifier" && ["SharedWorker", "XMLHttpRequest"].includes(String(callee.name))) packageError("UNSUPPORTED_API", `${callee.name} is unsupported in offline packages: ${from}`);
+        if (callee.type === "Identifier" && (callee.name === "SharedWorker" || callee.name === "XMLHttpRequest")) {
+          packageError("UNSUPPORTED_API", `${callee.name} is unsupported in offline packages: ${from}`, {
+            issue: callee.name === "SharedWorker" ? "shared-worker" : "xhr",
+          });
+        }
         if (callee.type === "Identifier" && callee.name === "Worker") {
           const arg = args[0];
           let value = literal(arg);
@@ -445,7 +458,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     return serialize(doc);
   };
   const resources: CompiledResource[] = [];
-  const html = parts(transformHtml(text("index.html")));
+  const html = parts(inPackageSource("index.html", () => transformHtml(text("index.html"))));
   // Parse every JS as a module (a superset of most classic sources); script-tag
   // classic mode is checked separately by the browser. All imports are mapped.
   for (const path of Object.keys(files)) {
@@ -464,11 +477,13 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     }
     let transformed: string | null = null;
     if (mime === "text/javascript") {
-      const source = text(path);
-      if (classicPaths.has(path)) transformJs(source, path, false);
-      transformed = transformJs(source, path, true);
+      transformed = inPackageSource(path, () => {
+        const source = text(path);
+        if (classicPaths.has(path)) transformJs(source, path, false);
+        return transformJs(source, path, true);
+      });
     }
-    if (mime === "text/css") transformed = transformCss(text(path), path);
+    if (mime === "text/css") transformed = inPackageSource(path, () => transformCss(text(path), path));
     if (mime === "image/svg+xml") {
       const svg = text(path);
       const fragment = parseFragment(svg);
@@ -476,22 +491,25 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         let value: css.CssNode;
         try {
           value = css.parse(source, { context: property === undefined ? "declarationList" : "value", parseCustomProperty: true, onParseError(error) { throw error; } });
-        } catch { return packageError("UNSUPPORTED_SVG", `Invalid SVG CSS: ${path}`); }
+        } catch { return packageError("UNSUPPORTED_SVG", `Invalid SVG CSS: ${path}`, { sourcePath: path, issue: "svg-css" }); }
         css.walk(value, function(child) {
-          if (child.type === "Raw") packageError("UNSUPPORTED_SVG", `Unparsed SVG CSS is unsupported: ${path}`);
+          if (child.type === "Raw") packageError("UNSUPPORTED_SVG", `Unparsed SVG CSS is unsupported: ${path}`, { sourcePath: path, issue: "svg-css" });
           const functionName = cssName(this.function?.name);
           // css-tree emits Url nodes for url(), but an escaped function name or
           // an image-set() string can also carry a URL.
           const stringUrl = child.type === "String" && (functionName === "url" || functionName === "src" || functionName === "image" || CSS_IMAGE_SET_FUNCTIONS.has(functionName));
           if (child.type === "Url" || stringUrl) {
             const name = cssName(this.declaration?.property ?? property);
-            if (!SVG_URL_PROPERTIES.has(name) || !child.value.startsWith("#")) packageError("UNSUPPORTED_SVG", `SVG CSS only supports local fragment URLs in presentation properties: ${path}`);
+            if (!child.value.startsWith("#")) packageError("UNSUPPORTED_SVG", `External SVG CSS references are unsupported: ${path}`, { sourcePath: path, issue: "svg-reference" });
+            if (!SVG_URL_PROPERTIES.has(name)) packageError("UNSUPPORTED_SVG", `SVG CSS only supports local fragment URLs in presentation properties: ${path}`, { sourcePath: path, issue: "svg-css" });
           }
         });
       };
       const check = (node: HtmlNode) => {
         if ("tagName" in node) {
-          if (["script", "foreignObject", "image", "use", "style", "animate", "animateMotion", "animateTransform", "set"].includes(node.tagName) || node.attrs.some(a => a.name.startsWith("on") || (a.name === "href" && !a.value.startsWith("#")))) packageError("UNSUPPORTED_SVG", `SVG must be self-contained and non-scripted: ${path}`);
+          if (UNSUPPORTED_SVG_ELEMENTS.has(node.tagName)) packageError("UNSUPPORTED_SVG", `Unsupported SVG element <${node.tagName}>: ${path}`, { sourcePath: path, issue: "svg-element", element: node.tagName });
+          if (node.attrs.some(attribute => attribute.name.startsWith("on"))) packageError("UNSUPPORTED_SVG", `SVG event handlers are unsupported: ${path}`, { sourcePath: path, issue: "svg-event" });
+          if (node.attrs.some(attribute => attribute.name === "href" && !attribute.value.startsWith("#"))) packageError("UNSUPPORTED_SVG", `External SVG references are unsupported: ${path}`, { sourcePath: path, issue: "svg-reference" });
           for (const attribute of node.attrs) {
             if (attribute.name === "style") checkCss(attribute.value);
             else if (SVG_URL_PROPERTIES.has(attribute.name)) checkCss(attribute.value, attribute.name);
@@ -506,14 +524,14 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   // Only statically reachable worker graphs need a second compilation. Workers
   // have no document import map, so their module edges become direct Blob URLs.
   const workers: CompiledResource[] = [];
-  for (const path of workerPaths) workers.push({ path, mime: "text/javascript", parts: parts(transformJs(text(path), path, true, true)) });
+  for (const path of workerPaths) workers.push({ path, mime: "text/javascript", parts: parts(inPackageSource(path, () => transformJs(text(path), path, true, true))) });
   // Blob dependencies must be acyclic; document ESM cycles still use import maps.
   const byPath = new Map(resources.map(resource => [resource.path, resource]));
   const active = new Set<string>(); const done = new Set<string>();
   const workerByPath = new Map(workers.map(resource => [resource.path, resource]));
   const checkCycle = (path: string, worker = false) => {
     const key = `${worker ? "worker:" : "asset:"}${path}`;
-    if (active.has(key)) packageError("RESOURCE_CYCLE", `Cyclic Blob resource references: ${path}`);
+    if (active.has(key)) packageError("RESOURCE_CYCLE", `Cyclic Blob resource references: ${path}`, { sourcePath: path });
     if (done.has(key)) return;
     active.add(key);
     for (const part of (worker ? workerByPath : byPath).get(path)?.parts ?? []) if (typeof part !== "string") checkCycle(part.asset, part.worker);
