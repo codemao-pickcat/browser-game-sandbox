@@ -1,4 +1,4 @@
-# Offline package runtime (0.9.0)
+# Offline package runtime (0.10.0)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.9.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.10.0", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -190,7 +190,7 @@ The loader resolves to verified package JavaScript and registered modules. Other
 
 Node preparation, browser preparation and child admission share `SANDBOX_PACKAGE_LIMITS`:
 
-- 2000 files; 512 UTF-8 bytes/path; 25 MiB/file and 50 MiB total original bytes.
+- 2000 files; 512 UTF-8 bytes/path; 25 MiB/file and 100 MiB total original bytes.
 - Parser text limit 25 MiB; compiled plan limit 100 MiB. Fallback bytes stay outside the Blob plan, not outside integrity/transport budgets.
 - Duplicate-SHA logical paths may share input buffers, but each path is charged separately. SDK transfer never detaches caller buffers.
 - Dedicated package channel, 256 KiB chunks with individual acknowledgments, 30s load timeout. Ordinary RPC remains 64 KiB, 30 requests/s with its existing concurrency/cancellation/request-ID checks; initial handshake timeout remains 5s.

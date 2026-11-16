@@ -1,6 +1,6 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.9.0" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.10.0" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
@@ -17,7 +17,7 @@ export interface SandboxPackageInput {
 export const SANDBOX_PACKAGE_LIMITS = Object.freeze({
   files: 2000,
   fileBytes: 25 * 1024 * 1024,
-  totalBytes: 50 * 1024 * 1024,
+  totalBytes: 100 * 1024 * 1024,
   textBytes: 25 * 1024 * 1024,
   compiledBytes: 100 * 1024 * 1024,
   pathBytes: 512,

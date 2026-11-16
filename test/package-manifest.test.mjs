@@ -49,7 +49,7 @@ for (const [name, mutate, code] of [
   ["string size",m=>{m.files["index.html"].size="0";},"INVALID_MANIFEST"],
   ["unsafe size",m=>{m.files["index.html"].size=Number.MAX_SAFE_INTEGER+1;},"INVALID_MANIFEST"],
   ["per-file budget",m=>{m.files["index.html"].size=limits.fileBytes+1;},"INVALID_MANIFEST"],
-  ["total budget",m=>{m.files["a.bin"]=metadata(limits.fileBytes);m.files["b.bin"]=metadata(limits.fileBytes);m.files["c.bin"]=metadata(1);},"PACKAGE_TOO_LARGE"],
+  ["total budget",m=>{for(let i=0;i<limits.totalBytes/limits.fileBytes;i++)m.files[`chunk-${i}.bin`]=metadata(limits.fileBytes);m.files["extra.bin"]=metadata(1);},"PACKAGE_TOO_LARGE"],
 ]) test(`pure validator and public prepare share ${name} rejection`, async () => {
   const value=manifest();mutate(value);
   assert.throws(()=>validatePackageManifest(value),error=>error.code===code);
@@ -58,7 +58,7 @@ for (const [name, mutate, code] of [
 
 test("shared metadata budget accepts exact product limits without reading file bytes", () => {
   const value=manifest();
-  value.files["a.bin"]=metadata(limits.fileBytes);value.files["b.bin"]=metadata(limits.fileBytes);
+  for(let i=0;i<limits.totalBytes/limits.fileBytes;i++)value.files[`chunk-${i}.bin`]=metadata(limits.fileBytes);
   assert.equal(validatePackageManifest(value).totalBytes,limits.totalBytes);
   const many=manifest();for(let i=0;i<limits.files-1;i++)many.files[`${i}.txt`]=metadata(0);
   assert.equal(validatePackageManifest(many).paths.length,limits.files);
