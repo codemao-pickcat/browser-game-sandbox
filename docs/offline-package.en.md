@@ -1,4 +1,4 @@
-# Offline package runtime (0.7.0)
+# Offline package runtime (0.10.0)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.7.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.10.0", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -40,6 +40,8 @@ await session.ready;     // Bytes reverified, resources loaded, initial modules 
 // Use session.iframe for layout; do not change sandbox/src/srcdoc/allow.
 session.terminate("player closed");
 ```
+
+After validating the complete package, the trusted host can set `manifest.resourceLoading` to `"on-demand-v1"`. Use `partitionSandboxPackageFiles(manifest)` and supply bytes for `startup` only. The `loadDeferredFile(path, signal)` session option supplies bytes for `deferred`. Known formats and files sharing their digest stay in `startup`. A package `fetch` GET loads deferred bytes through the host and verifies their length and SHA-256 before delivery. HEAD uses manifest metadata. The session coalesces concurrent reads, retains verified data, and cancels pending loads when it closes. `initializationTimeoutMs` can give initialization an explicit budget while it waits for a deferred file. The handshake and initial transfer retain their respective time limits.
 
 Preparation works in Node.js 24+ and browsers using parse5, css-tree and Acorn, without DOM access, user-code execution or network I/O. It validates the root entry, exact file set, paths, sizes, SHA-256 and existing parser constraints, then snapshots caller bytes. A prepared handle is immutable and local to its JS realm, not a serializable compiled plan. After server preparation, the player downloads the same package and prepares it again.
 
@@ -112,7 +114,7 @@ Unknown extensions and extensionless files are accepted as **fallback raw data**
 - literal `new URL(..., import.meta.url)` rewriting;
 - Worker script generation.
 
-Those uses fail with `UNSUPPORTED_REFERENCE`, not an upload-extension error. Read fallback bytes with `fetch("model.glb")`, not a literal `new URL` wrapper. Known JSON/TXT/CSV/XML/BIN keep their existing Blob/resource/literal-URL compatibility: `.bin` sharing the fallback MIME does **not** make fallback data eligible for Blob materialization. No MIME, class, capability or policy fields are added to the manifest.
+Those uses fail with `UNSUPPORTED_REFERENCE`. Read fallback bytes with `fetch("model.glb")`. Known JSON/TXT/CSV/XML/BIN support Blob and literal-URL references. Resource types are derived from the file paths.
 
 Only root `index.html` is an executable document. Secondary `.html` files remain verified UTF-8 passive fetch data: no template parsing/rewriting, HTML Blob, DOM insertion, subdocument or navigation entry. Known HTML/JS/CSS/SVG validation errors never downgrade to raw data. ZIP extraction belongs to the platform; this API does not unpack ZIPs or recursively extract nested archives. A ZIP's `.htm` file is fallback data; a platform may still wrap a standalone uploaded HTM as root `index.html`.
 
@@ -135,7 +137,7 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Inline `data:` URLs | Allowed unchanged in passive resource positions (`src`/`srcset`/`poster`/`background`, CSS `url()`/`image-set()` and literal `new URL`). They are not decoded into package files. CSP allows `data:` in `img-src`/`font-src`/`media-src`; SVG used as an image does not execute scripts. Scripts, modules, Workers, stylesheets (including `@import`) and direct `fetch()` reject `data:` with `INLINE_RESOURCE`; navigation links still reject it |
 | SVG | Self-contained, with no scripts, animation or external URLs. CSS declarations in `style` attributes follow the same validation as presentation attributes: only approved properties may use same-document `url(#id)`; unparsed CSS and active schemes are rejected. `<style>`, `foreignObject`, `image` and `use` remain unsupported |
 | Static query/fragment | Lookup uses the package path; query is dropped from Blob URLs, full fragment retained. Queries create no independent cache/version; ESM query/hash remains unsupported |
-| Package-relative fetch | GET/HEAD from the complete verified file set, including fallback data; exact raw bytes, MIME and Content-Length; HEAD has no body. Relative paths always start at root index.html, not the calling script |
+| Package-relative fetch | GET returns verified file bytes, including deferred fallback data. HEAD returns MIME and Content-Length from the package manifest. Relative paths start at root `index.html` |
 | Fetch of a rewritten known Blob URL | Returns the corresponding original file bytes, including JSON/TXT/BIN; missing own paths, external URLs and non-GET/HEAD methods fail with TypeError, without network fallback |
 | Fetch of a Blob URL created by the work document | GET/HEAD can read a live Blob registered by `URL.createObjectURL` in the work document. Fragments are accepted, and queries follow native Blob URL lookup semantics |
 | Fragment anchors, `a[href]`/`area[href]` | Supported; non-fragment `a`/`area` `href` values are kept without rewriting or validation, because the runtime `onLinkClick` in `package-loader.ts` already calls `preventDefault` in the capture phase for every `a[href]`/`area[href]` click and only handles `#fragment`; `javascript:`/`data:`/`vbscript:` remain rejected |
@@ -152,7 +154,8 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Other `meta http-equiv="..."` | The whole `meta` element is dropped: a Blob/srcdoc document has no HTTP response header for those directives to override |
 | SRI and other inert attributes, `nomodule` | `integrity/ping/manifest/codebase/archive/srcdoc` are deleted on any element; a classic `<script nomodule>` element is removed from the document entirely, its `src` is not rewritten, materialized or parsed as a module (only its bytes remain for package fetch), and its inline code is dropped. `nomodule` has no meaning on module scripts, so a `type="module" nomodule` script keeps running and only the attribute is removed |
 | Form submission (`action`/`formaction`) | Rejected (`UNSUPPORTED_HTML_FORM`); layout and controls still work |
-| `link rel=icon/apple-touch-icon/preload/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time without validating or rewriting the href, so a `data:,` favicon, missing file or external URL does not block preparation |
+| `link rel=preload` in root `index.html` | `createSandboxPlaybackManifest` includes the digest of each valid package-local `href` with a preload `as` destination. Template links, external URLs and missing targets are ignored. The hint is removed from the executable document |
+| `link rel=icon/apple-touch-icon/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time |
 | Combined `rel` token lists (e.g. `rel="stylesheet preload"`) | Tokens are case-insensitive and order-independent. A combination with `stylesheet` keeps only that token and still validates the href as a stylesheet. Unknown tokens such as `shortcut` remain rejected (`UNSUPPORTED_HTML_LINK`) |
 
 JS files are validated with modern module syntax; classic references cannot depend on sloppy-only syntax such as `with`. Inline handlers are also parsed and cannot depend on top-level `return`. `document.write`, parser-stream timing, module `document.currentScript`, original HTTP paths/import.meta.url, XHR and arbitrary dynamic loading are not transparently compatible. The runtime replays DOMContentLoaded/load once after initial scripts finish. Later application tasks, playback and custom app readiness are outside `session.ready`.
@@ -187,7 +190,7 @@ The loader resolves to verified package JavaScript and registered modules. Other
 
 Node preparation, browser preparation and child admission share `SANDBOX_PACKAGE_LIMITS`:
 
-- 2000 files; 512 UTF-8 bytes/path; 25 MiB/file and 50 MiB total original bytes.
+- 2000 files; 512 UTF-8 bytes/path; 25 MiB/file and 100 MiB total original bytes.
 - Parser text limit 25 MiB; compiled plan limit 100 MiB. Fallback bytes stay outside the Blob plan, not outside integrity/transport budgets.
 - Duplicate-SHA logical paths may share input buffers, but each path is charged separately. SDK transfer never detaches caller buffers.
 - Dedicated package channel, 256 KiB chunks with individual acknowledgments, 30s load timeout. Ordinary RPC remains 64 KiB, 30 requests/s with its existing concurrency/cancellation/request-ID checks; initial handshake timeout remains 5s.
@@ -227,7 +230,7 @@ Adapter methods are bound when creating the session. Capture a fixed game/viewer
 
 ## Isolation, revalidation and lifecycle
 
-The offline iframe uses `allow-scripts` plus `allow-pointer-lock` only when granted, always without `allow-same-origin`. Bootstrap authenticates the exact contentWindow, null Origin, 256-bit one-time token and one initial port. The child checks the actual parent and exact trusted host Origin. Package transfer and the existing Host RPC use distinct MessagePorts. Game scripts run only after authentication, all byte verification, known-resource Blob creation and import-map installation.
+The offline iframe uses `allow-scripts` plus `allow-pointer-lock` only when granted, always without `allow-same-origin`. Bootstrap authenticates the exact contentWindow, null Origin, 256-bit one-time token and one initial port. The child checks the actual parent and exact trusted host Origin. Package transfer, on-demand data, and Host RPC use distinct MessagePorts. Game scripts run after authentication, startup byte verification, known-resource Blob creation and import-map installation.
 
 Host preparation and child admission share pure manifest validation (version/root/path/count/SHA format/sizes), but the child independently hashes and recompiles received bytes. Own-key file access allows existing prototype-named files and rejects missing `constructor`/`toString`/`__proto__` instead of reading inherited object values.
 

@@ -44,7 +44,7 @@ Optional permissions are `worker`, `wasm`, `pointerLock`, `eval`, `clipboardRead
 
 Only `clipboardRead` plus a `SandboxClipboardAdapter` exposes `game.clipboardReadText({})`. The adapter's `readText(signal: AbortSignal): Promise<string>` uses existing plugin/Host RPC strict input/output checks and sanitized errors: empty object input, 8 KiB UTF-8 output, concurrency 1, 30s timeout, cancellation and discarded late results after stop. Native iframe clipboard access stays denied.
 
-Optional string-only `window.game.storageGet/Set/Delete` use the existing host-plugin/RPC validation and a scope-bound host adapter. Limits match MOSS: 2000 files, 512 UTF-8 path bytes, 25 MiB/file and 50 MiB/package. `SANDBOX_RUNTIME_VERSION` equals the package version. The standalone `package.runtime.js` export is a self-contained trusted ESM browser bundle; `npm run prepare` builds dist without Git metadata, including for pinned-commit Git dependencies.
+Optional string-only `window.game.storageGet/Set/Delete` use the existing host-plugin/RPC validation and a scope-bound host adapter. Limits match MOSS: 2000 files, 512 UTF-8 path bytes, 25 MiB/file and 100 MiB/package. `SANDBOX_RUNTIME_VERSION` equals the package version. The standalone `package.runtime.js` export is a self-contained trusted ESM browser bundle; `npm run prepare` builds dist without Git metadata, including for pinned-commit Git dependencies.
 
 The offline runtime accepts `data:` in passive image, font and media positions. If the opaque frame denies native Web Storage, initial scripts get in-memory `localStorage` and `sessionStorage`. The optional host adapter preloads and saves `localStorage` through `window.game`; `sessionStorage` is scoped to a playback session.
 

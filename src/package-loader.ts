@@ -4,9 +4,10 @@ import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSna
 import { installMemoryStorage } from "./package-web-storage.js";
 import { installPackageSystemJs } from "./package-systemjs.js";
 import type { SandboxPlayerProfile } from "./package-player-profile.js";
+import type { openDeferredFiles } from "./package-deferred.js";
 
-/** Runs only in the opaque child, after every byte has been received/verified. */
-export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings, playerAvatar: Blob | null): Promise<() => void> {
+/** Runs only in the opaque child, after startup bytes have been received and verified. */
+export async function loadSandboxPackage(snapshot: PackageSnapshot, client: SandboxBridgeClient, methods: SandboxGameApiBindings, playerAvatar: Blob | null, deferred?: ReturnType<typeof openDeferredFiles>): Promise<() => void> {
   const urls = new Map<string, string>();
   const filesByBlobUrl = new Map<string, string>();
   const inlineModuleUrls: string[] = [];
@@ -43,6 +44,7 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     document.removeEventListener("click", onLinkClick, true);
     stopObserving();
     client.close();
+    deferred?.close();
     for (let i = 0; i < clearStorage.length; i++) clearStorage[i]!();
     clearStorage.length = 0;
     for (const worker of workers) worker.terminate();
@@ -205,12 +207,12 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
         headers: { "Content-Type": blob.type, "Content-Length": String(blob.size) },
       });
       const path = filesByBlobUrl.get(reference.split(/[?#]/, 1)[0]!) ?? resolvePackageReference(reference, "index.html").path;
-      if (!Object.hasOwn(snapshot.files, path)) throw new TypeError(`Missing offline fetch resource: ${reference}`);
-      const bytes = snapshot.files[path]!;
+      if (!Object.hasOwn(snapshot.manifest.files, path)) throw new TypeError(`Missing offline fetch resource: ${reference}`);
+      const headers = { "Content-Type": resourceMime(path), "Content-Length": String(snapshot.manifest.files[path]!.size) };
+      if (method === "HEAD") return new Response(null, { headers });
+      const bytes = Object.hasOwn(snapshot.files, path) ? new Uint8Array(snapshot.files[path]!) : await deferred!.read(path, signal);
       signal?.throwIfAborted();
-      return new Response(method === "HEAD" ? null : new Uint8Array(bytes), {
-        status: 200, headers: { "Content-Type": resourceMime(path), "Content-Length": String(bytes.byteLength) },
-      });
+      return new Response(bytes, { headers });
     };
     Object.defineProperty(window, "fetch", { value: localFetch, configurable: false, writable: false });
 

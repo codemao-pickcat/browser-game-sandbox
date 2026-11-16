@@ -3,7 +3,8 @@ import { isBridgeInitMessage, assertValidOrigin } from "./protocol.js";
 import { parseSandboxGamePreloadConfig, type SandboxGameApiBindings } from "./game-api-config.js";
 import { loadSandboxPackage } from "./package-loader.js";
 import { prepareSandboxPackage, snapshotPreparedPackage } from "./package-compiler.js";
-import { SANDBOX_PACKAGE_LIMITS as LIMITS, validatePackageManifest, type SandboxPackageManifest } from "./package-format.js";
+import { SANDBOX_PACKAGE_LIMITS as LIMITS, validatePackageManifest, partitionSandboxPackageFiles, type SandboxPackageManifest } from "./package-format.js";
+import { openDeferredFiles } from "./package-deferred.js";
 import { parseSandboxPlayerAvatar } from "./package-player-profile.js";
 
 // Only the trusted SDK writes this script/config into srcdoc. It is not a
@@ -25,6 +26,7 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
     let paths: readonly string[] = [];
     let index = 0, offset = 0, received = 0, nextSequence = 0;
     let expectedBytes = 0;
+    let expectsDeferredPort = false;
     let finished = false;
     let files: Record<string, Uint8Array> = Object.create(null);
     let timer = setTimeout(() => fail("Package transfer timed out"), LIMITS.transferTimeoutMs);
@@ -46,10 +48,12 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
         }
         if (data?.type === "begin" && client && !manifest) {
           const checked = validatePackageManifest(data.manifest);
-          if (checked.totalBytes !== data.totalBytes) throw new TypeError("Invalid package byte budget");
+          const { startup, deferred, startupBytes } = partitionSandboxPackageFiles(checked.manifest);
+          if (startupBytes !== data.totalBytes) throw new TypeError("Invalid package byte budget");
           manifest = checked.manifest;
-          paths = checked.paths;
-          expectedBytes = checked.totalBytes;
+          paths = startup;
+          expectedBytes = startupBytes;
+          expectsDeferredPort = deferred.length > 0;
           for (const path of paths) files[path] = new Uint8Array(manifest.files[path]!.size);
           post({ type: "ack", sequence: -1 });
           return;
@@ -67,8 +71,10 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
           return;
         }
         if (data?.type === "finish" && manifest && client && index === paths.length && received === expectedBytes) {
+          if (event.ports.length !== Number(expectsDeferredPort)) throw new TypeError("Invalid package resource port");
           if (data.playerAvatar !== undefined && !methods.getPlayerProfile) throw new TypeError("Player avatar requires a profile binding");
           const avatar = data.playerAvatar === undefined ? null : parseSandboxPlayerAvatar(data.playerAvatar);
+          const deferred = expectsDeferredPort ? openDeferredFiles(event.ports[0]!, manifest) : undefined;
           finished = true;
           const input = { manifest, files };
           // Ignore further messages permanently; no rebinding or duplicate finish.
@@ -78,11 +84,12 @@ export function startPackageBootstrap(config: { token: string; hostOrigin: strin
               // Revalidate without creating a Worker: the work's worker grant
               // is independent of trusted-player preparation options.
               const prepared = await prepareSandboxPackage(input);
-              await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods, avatar);
+              await loadSandboxPackage(snapshotPreparedPackage(prepared), client!, methods, avatar, deferred);
               files = Object.create(null);
               clearTimeout(timer);
               post({ type: "ready" }); control.close();
             } catch (error) {
+              deferred?.close();
               clearTimeout(timer); files = Object.create(null); client?.close();
               post({ type: "error", message: error instanceof Error ? error.message.slice(0, 256) : "Package load failed" }); control.close();
             }

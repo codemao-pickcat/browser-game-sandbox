@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareSandboxPackage, SANDBOX_RUNTIME_VERSION, SANDBOX_PACKAGE_LIMITS, createSandboxPackageSession, buildOfflineBrowserPolicy } from "../dist/index.js";
+import { prepareSandboxPackage, createSandboxPlaybackManifest, partitionSandboxPackageFiles, SANDBOX_RUNTIME_VERSION, SANDBOX_PACKAGE_LIMITS, createSandboxPackageSession, buildOfflineBrowserPolicy } from "../dist/index.js";
 import { snapshotPreparedPackage } from "../dist/package-prepare.js";
 import { resolvePackageReference } from "../dist/package-format.js";
 import { packageStoragePlugin } from "../dist/package-storage.js";
@@ -27,6 +27,52 @@ const fixture = {
   "image.png": new Uint8Array([1, 2, 3]),
 };
 
+test("on-demand preparation requires exactly the startup bytes while validating references against the full manifest", async () => {
+  const pkg = await input({
+    "index.html": '<script type="module">await fetch("./level.data");</script>',
+    "code.bin": "already resident",
+    "alias.data": "already resident",
+    "level.data": "deferred",
+  });
+  assert.deepEqual(partitionSandboxPackageFiles(pkg.manifest).deferred, []);
+  const manifest = { ...pkg.manifest, resourceLoading: "on-demand-v1" };
+  const files = { ...pkg.files };
+  delete files["level.data"];
+  const partition = partitionSandboxPackageFiles(manifest);
+  assert.deepEqual(partition.deferred, ["level.data"]);
+  assert.deepEqual(partition.startup, ["index.html", "code.bin", "alias.data"]);
+  assert.equal(partition.startupBytes, Object.values(files).reduce((sum, bytes) => sum + bytes.length, 0));
+  const prepared = await prepareSandboxPackage({ manifest, files });
+  assert.equal(prepared.totalBytes, partition.startupBytes + pkg.files["level.data"].length);
+  assert.deepEqual(Object.keys(snapshotPreparedPackage(prepared).files), partition.startup);
+  await assert.rejects(prepareSandboxPackage({ manifest, files: pkg.files }), /Unexpected files/);
+  await assert.rejects(prepareSandboxPackage({ manifest: pkg.manifest, files }), /Byte length mismatch/);
+});
+
+test("valid root HTML preload hints promote package bytes without emitting browser hints", async () => {
+  const pkg = await input({
+    "index.html": `<link rel="PRELOAD" as="fetch" href="/asset.data?v=1">
+      <link rel="preload" as="fetch" href="./asset%2Edata#section">
+      <link rel="preload" as="fetch" href="https://cdn.invalid/asset.data">
+      <link rel="preload" as="fetch" href="../later.data">
+      <link rel="preload" as="fetch" href="missing.data">
+      <link rel="preload" href="later.data"><link rel="preload" as="invalid" href="later.data">
+      <link rel="prefetch" as="fetch" href="later.data">
+      <template><link rel="preload" as="fetch" href="later.data"></template>`,
+    "asset.data": "preloaded bytes", "copy.glb": "preloaded bytes", "later.data": "deferred bytes",
+  });
+  const prepared = await prepareSandboxPackage(pkg);
+  const manifest = createSandboxPlaybackManifest(prepared);
+  assert.deepEqual(manifest.preloadDigests, [pkg.manifest.files["asset.data"].sha256]);
+  const { startup, deferred } = partitionSandboxPackageFiles(manifest);
+  assert.deepEqual(startup, ["index.html", "asset.data", "copy.glb"]);
+  assert.deepEqual(deferred, ["later.data"]);
+  const files = Object.fromEntries(startup.map(path => [path, pkg.files[path]]));
+  const partial = await prepareSandboxPackage({ manifest, files });
+  assert.doesNotMatch(snapshotPreparedPackage(partial).plan.html.join(""), /<link\b/);
+  await assert.rejects(prepareSandboxPackage({ manifest: { ...manifest, preloadDigests: ["f".repeat(64)] }, files }), /Invalid package preload digests/);
+});
+
 test("pure Node preparation verifies/compiles multi-file packages without DOM, execution or network", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error("must never fetch"); };
@@ -34,7 +80,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.7.0");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.10.0");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -517,7 +563,7 @@ test("product budgets match MOSS, including 2000 files and UTF-8 path bytes", as
   assert.equal(SANDBOX_PACKAGE_LIMITS.files, 2000);
   assert.equal(SANDBOX_PACKAGE_LIMITS.pathBytes, 512);
   assert.equal(SANDBOX_PACKAGE_LIMITS.fileBytes, 25 * 1024 * 1024);
-  assert.equal(SANDBOX_PACKAGE_LIMITS.totalBytes, 50 * 1024 * 1024);
+  assert.equal(SANDBOX_PACKAGE_LIMITS.totalBytes, 100 * 1024 * 1024);
   const sources = Object.fromEntries(Array.from({length:1999},(_,i)=>[`files/${i}.txt`, ""]));
   // Construct explicitly rather than relying on character length for UTF-8.
   const longPath = "a".repeat(508)+".txt";

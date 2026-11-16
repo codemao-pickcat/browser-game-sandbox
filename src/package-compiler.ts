@@ -5,7 +5,7 @@ import { simple } from "acorn-walk";
 import { isNpmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 import {
   SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError,
-  isSystemJsAlias, moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest,
+  isSystemJsAlias, moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest, partitionSandboxPackageFiles,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
 } from "./package-format.js";
@@ -32,6 +32,7 @@ const MARKER = "__SANDBOX_PACKAGE_ASSET_";
 // same reason: the reference document is never fetched or installed. Favicons
 // likewise have no visible effect inside the iframe.
 const INERT_LINK_RELATIONS: ReadonlySet<string> = new Set(["preload", "prefetch", "modulepreload", "preconnect", "dns-prefetch", "manifest", "icon", "apple-touch-icon"]);
+const PRELOAD_DESTINATIONS: ReadonlySet<string> = new Set(["fetch", "font", "image", "script", "style", "track"]);
 // Attributes that carry URLs or documents no offline document can ever use: an
 // integrity check against a rewritten Blob, a beacon, a cached manifest, plugin
 // code base, archive fallback, or a nested document source. Dropping them keeps
@@ -75,7 +76,8 @@ export async function verifyPackageBytes(input: SandboxPackageInput): Promise<Om
   if (!input || typeof input !== "object" || !input.files || typeof input.files !== "object" || Array.isArray(input.files)) {
     return packageError("INVALID_MANIFEST", "Package files must be a byte record");
   }
-  const { manifest, paths, totalBytes } = validatePackageManifest(input.manifest);
+  const { manifest, totalBytes } = validatePackageManifest(input.manifest);
+  const { startup: paths } = partitionSandboxPackageFiles(manifest);
   const files: Record<string, Uint8Array> = Object.create(null);
   for (const path of paths) {
     const metadata = manifest.files[path]!;
@@ -102,8 +104,21 @@ export function snapshotPreparedPackage(prepared: PreparedSandboxPackage): Packa
   return { ...snapshot, files: Object.fromEntries(Object.entries(snapshot.files).map(([path, bytes]) => [path, new Uint8Array(bytes)])) };
 }
 
+/** Select startup files for a package whose complete byte set has been prepared. */
+export function createSandboxPlaybackManifest(prepared: PreparedSandboxPackage): SandboxPackageManifest {
+  const snapshot = snapshots.get(prepared);
+  if (!snapshot) return packageError("NOT_PREPARED", "Package must come from prepareSandboxPackage in this realm");
+  const { manifest, plan } = snapshot;
+  const preloadDigests = [...new Set(plan.preloadPaths?.map(path => manifest.files[path]!.sha256))].sort();
+  return Object.freeze({
+    ...manifest,
+    resourceLoading: "on-demand-v1" as const,
+    ...(preloadDigests.length ? { preloadDigests: Object.freeze(preloadDigests) } : {}),
+  });
+}
+
 export function compileVerifiedPackage({ manifest, files }: Omit<PackageSnapshot, "plan">): PackagePlan {
-  return compilePackage(files, manifest.formatVersion === 2 ? manifest.moduleAliases : undefined);
+  return compilePackage(files, manifest.formatVersion === 2 ? manifest.moduleAliases : undefined, undefined, manifest.files);
 }
 
 /** Reuses the compiler's source traversal, without acquiring or executing modules. */
@@ -113,7 +128,7 @@ export function collectSandboxNpmImports(files: SandboxPackageInput["files"]): r
   return [...specifiers];
 }
 
-export function compilePackage(files: Readonly<Record<string, Uint8Array>>, aliases?: Readonly<Record<string, string>>, specifiers?: Set<string>): PackagePlan {
+export function compilePackage(files: Readonly<Record<string, Uint8Array>>, aliases?: Readonly<Record<string, string>>, specifiers?: Set<string>, declaredFiles: object = files): PackagePlan {
   const markers: { asset: string; suffix: string; worker?: boolean }[] = [];
   const workerPaths = new Set<string>();
   const classicPaths = new Set<string>();
@@ -125,6 +140,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   // Every package path some live tag or expression still resolves to, including
   // module specifiers, which never receive a Blob marker.
   const referencedPaths = new Set<string>();
+  const preloadPaths = new Set<string>();
   const reference = (value: string, from: string, kind: "asset" | "script" | "module" | "css" | "fetch" | "worker" = "asset"): string => {
     if (value.startsWith("#") && kind === "asset") return value;
     if (parseInlineDataUrl(value) !== undefined) {
@@ -135,7 +151,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     const resolved = resolvePackageReference(value, from);
     if (aliases && isNpmPackagePath(resolved.path)) return packageError("UNSUPPORTED_MODULE", "Use npm imports to access cached modules");
     referencedPaths.add(resolved.path);
-    if (!Object.hasOwn(files, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
+    if (!Object.hasOwn(declaredFiles, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
     const mime = knownResourceMime(resolved.path);
     if (mime === undefined && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", `Fallback data supports package GET/HEAD only, not ${kind} references: ${value}`);
     if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML is passive fetch data only; HTML assets, subdocuments and navigation are unsupported");
@@ -314,7 +330,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     };
     // Returns the reference kind for a kept link, or null for a hint-only link
     // that was scrubbed from the document.
-    const classifyLink = (node: DefaultTreeAdapterMap["element"]): "css" | "asset" | null => {
+    const classifyLink = (node: DefaultTreeAdapterMap["element"], inTemplate: boolean): "css" | "asset" | null => {
       const find = (name: string) => node.attrs.find(item => item.name === name);
       const rel = find("rel");
       const href = find("href")?.value;
@@ -326,6 +342,12 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         if (href !== undefined) packageError("UNSUPPORTED_HTML_LINK", "Unsupported link relation: (missing)");
         return "asset";
       }
+      const destination = find("as")?.value.toLowerCase();
+      if (!inTemplate && node.namespaceURI === "http://www.w3.org/1999/xhtml" && tokens.includes("preload") &&
+          href && /^[^?#]/.test(href) && destination && PRELOAD_DESTINATIONS.has(destination)) {
+        const path = optionalPackagePath(href);
+        if (path && !isNpmPackagePath(path) && Object.hasOwn(declaredFiles, path)) preloadPaths.add(path);
+      }
       // A hint mixed with a direct relation keeps the direct behaviour and drops
       // only the hint tokens: the hint half is redundant offline and must not
       // make the browser preload a Blob URL it is already loading.
@@ -333,9 +355,8 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         rel!.value = "stylesheet";
         return "css";
       }
-      // Hint-only tags are scrubbed rather than validated or rewritten: the tag
-      // never reaches the executable document, so its href, as and srcset can
-      // neither fetch nor reach the child, and a CDN hint no longer fails upload.
+      // The trusted player handles admitted preload targets. Hint-only tags
+      // never reach the executable document or trigger browser requests.
       dropped.add(node);
       return null;
     };
@@ -370,8 +391,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     const rewriteSrcset = (value: string): string => splitSrcset(value)
       .map(candidate => `${reference(candidate.url, "index.html", "asset")}${candidate.descriptor}`)
       .join(", ");
-    // A dropped tag never validates its reference, so resolution failure only
-    // means there is no path to exclude from compilation.
+    // A hint or dropped tag can supply an optional package path.
     const optionalPackagePath = (value: string): string | undefined => {
       try { return resolvePackageReference(value, "index.html").path; }
       catch { return undefined; }
@@ -415,7 +435,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
         const tag = node.tagName.toLowerCase();
         let linkKind: "css" | "asset" = "asset";
         if (tag === "link") {
-          const classification = classifyLink(node);
+          const classification = classifyLink(node, inTemplate);
           if (classification === null) return; // Hint-only tag: scrubbed from the document.
           linkKind = classification;
           // A responsive set on a stylesheet link is meaningless there.
@@ -598,7 +618,8 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
   };
   for (const path of byPath.keys()) checkCycle(path);
   for (const path of workerByPath.keys()) checkCycle(path, true);
-  const plan = { resources, workers, html, ...(systemJsImports && { systemJsImports }) };
+  const plan = { resources, workers, html, ...(systemJsImports && { systemJsImports }),
+    ...(preloadPaths.size ? { preloadPaths: [...preloadPaths] } : {}) };
   if (encoder.encode(JSON.stringify(plan)).byteLength > LIMITS.compiledBytes) packageError("PACKAGE_TOO_LARGE", "Compiled package budget exceeded");
   return plan;
 }
