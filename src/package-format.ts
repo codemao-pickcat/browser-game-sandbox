@@ -1,11 +1,12 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.8.0" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.9.0" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
   readonly files: Readonly<Record<string, { readonly sha256: string; readonly size: number }>>;
   readonly resourceLoading?: "on-demand-v1";
+  readonly preloadDigests?: readonly string[];
 } & ({ readonly formatVersion: 1 } | { readonly formatVersion: 2; readonly moduleAliases: Readonly<Record<string, string>> });
 export interface SandboxPackageInput {
   readonly manifest: SandboxPackageManifest;
@@ -91,9 +92,20 @@ export function validatePackageManifest(value: unknown): {
   if (candidate.resourceLoading !== undefined && candidate.resourceLoading !== "on-demand-v1") {
     return packageError("INVALID_MANIFEST", "Invalid package resource loading mode");
   }
+  let preloadDigests: readonly string[] | undefined;
+  if (candidate.preloadDigests !== undefined) {
+    const values = candidate.preloadDigests;
+    const digests = new Set(Object.values(files).map(file => file.sha256));
+    if (!candidate.resourceLoading || !Array.isArray(values) || values.length > digests.size ||
+        new Set(values).size !== values.length || values.some(value => typeof value !== "string" || !digests.has(value))) {
+      return packageError("INVALID_MANIFEST", "Invalid package preload digests");
+    }
+    preloadDigests = Object.freeze([...values]);
+  }
   const base = {
     entrypoint: "index.html" as const, files: Object.freeze(files),
     ...(candidate.resourceLoading ? { resourceLoading: "on-demand-v1" as const } : {}),
+    ...(preloadDigests?.length ? { preloadDigests } : {}),
   } as const;
   let manifest: SandboxPackageManifest;
   if (candidate.formatVersion === 2) {
@@ -188,6 +200,8 @@ export interface PackagePlan {
   readonly workers: readonly CompiledResource[];
   /** The sole executable document, compiled from root index.html. */
   readonly html: readonly ResourcePart[];
+  /** Package-local HTML preload targets recorded without emitting browser hints. */
+  readonly preloadPaths?: readonly string[];
   /** Exact SystemJS aliases to validated script files. Absent for ordinary packages. */
   readonly systemJsImports?: Readonly<Record<string, string>>;
 }
@@ -227,14 +241,17 @@ export function resourceMime(path: string): string {
   return knownResourceMime(path) ?? "application/octet-stream";
 }
 
-/** V1 only defers files that have no synchronous Blob or compiler consumer. */
+/** V1 defers fetch-only data outside the startup and preload set. */
 export function partitionSandboxPackageFiles(manifest: SandboxPackageManifest): {
   startup: string[]; deferred: string[]; startupBytes: number;
 } {
   const startup: string[] = [], deferred: string[] = [];
   let startupBytes = 0;
   const entries = Object.entries(manifest.files);
-  const eagerDigests = new Set(entries.filter(([path]) => knownResourceMime(path) !== undefined).map(([, file]) => file.sha256));
+  const eagerDigests = new Set(manifest.preloadDigests);
+  for (const [path, file] of entries) {
+    if (knownResourceMime(path) !== undefined) eagerDigests.add(file.sha256);
+  }
   for (const [path, file] of entries) {
     if (manifest.resourceLoading === "on-demand-v1" && !eagerDigests.has(file.sha256)) deferred.push(path);
     else { startup.push(path); startupBytes += file.size; }

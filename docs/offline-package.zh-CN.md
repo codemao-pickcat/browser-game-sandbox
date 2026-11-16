@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.8.0）
+# 离线作品包运行时（0.9.0）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.8.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.9.0"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -148,7 +148,8 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 其他 `meta http-equiv="..."` | 整条 `meta` 元素丢弃：Blob/srcdoc 文档没有可供这些指令覆盖的 HTTP 响应头 |
 | SRI 与其他惰性属性、`nomodule` | `integrity/ping/manifest/codebase/archive/srcdoc` 在任何元素上直接删除；classic `<script nomodule>` 整个元素从文档移除，其 `src` 不重写、不物化，也不参与模块解析（只保留字节供包内 fetch），被移除的 `nomodule` 内联代码同样丢弃；`nomodule` 对 module 脚本无意义，故 `type="module" nomodule` 的脚本继续执行，只删除该属性 |
 | 表单提交（`action`/`formaction`） | 明确拒绝（`UNSUPPORTED_HTML_FORM`）；布局与控件仍可用 |
-| `link rel=icon/apple-touch-icon/preload/prefetch/modulepreload/manifest`、`preconnect/dns-prefetch` | 编译时删除，不校验也不重写 `href`，因此 `data:,` favicon、缺失文件和外部 URL 均不阻断准备 |
+| 根 `index.html` 的 `link rel=preload` | `createSandboxPlaybackManifest` 将有效 `as` 和包内 `href` 对应的文件摘要加入启动集合。查询和片段按包内引用规则处理。模板、外链和无效目标不参与归类，编译时移除提示标签 |
+| `link rel=icon/apple-touch-icon/prefetch/modulepreload/manifest`、`preconnect/dns-prefetch` | 编译时删除提示标签 |
 | `rel` 组合写法（如 `rel="stylesheet preload"`） | 不区分 token 大小写与顺序；与 `stylesheet` 组合时只保留 stylesheet，`href` 仍按样式表引用校验；未知 token（如 `shortcut`）仍拒绝（`UNSUPPORTED_HTML_LINK`） |
 
 JS 文件采用现代 ES module 语法校验；即使以 classic script 引用，也不支持依赖 `with` 等 sloppy-only 语法。内联事件属性也做语法校验，不支持依赖顶层 `return` 的 handler。`document.write`、脚本流式解析时机、`document.currentScript`（module）、`location` 的原始 HTTP 路径、直接读取 `import.meta.url` 的原始文件路径、XHR/流式请求及动态加载任意文件都不保证兼容。初始文档已完成 bootstrap；SDK 在初始脚本完成后回放一次 `DOMContentLoaded`/`load` 供常见作品初始化。后续异步业务任务、媒体播放与应用自定义状态不属于 `ready` 的保证范围。

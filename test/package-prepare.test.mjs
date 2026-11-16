@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareSandboxPackage, partitionSandboxPackageFiles, SANDBOX_RUNTIME_VERSION, SANDBOX_PACKAGE_LIMITS, createSandboxPackageSession, buildOfflineBrowserPolicy } from "../dist/index.js";
+import { prepareSandboxPackage, createSandboxPlaybackManifest, partitionSandboxPackageFiles, SANDBOX_RUNTIME_VERSION, SANDBOX_PACKAGE_LIMITS, createSandboxPackageSession, buildOfflineBrowserPolicy } from "../dist/index.js";
 import { snapshotPreparedPackage } from "../dist/package-prepare.js";
 import { resolvePackageReference } from "../dist/package-format.js";
 import { packageStoragePlugin } from "../dist/package-storage.js";
@@ -49,6 +49,30 @@ test("on-demand preparation requires exactly the startup bytes while validating 
   await assert.rejects(prepareSandboxPackage({ manifest: pkg.manifest, files }), /Byte length mismatch/);
 });
 
+test("valid root HTML preload hints promote package bytes without emitting browser hints", async () => {
+  const pkg = await input({
+    "index.html": `<link rel="PRELOAD" as="fetch" href="/asset.data?v=1">
+      <link rel="preload" as="fetch" href="./asset%2Edata#section">
+      <link rel="preload" as="fetch" href="https://cdn.invalid/asset.data">
+      <link rel="preload" as="fetch" href="../later.data">
+      <link rel="preload" as="fetch" href="missing.data">
+      <link rel="preload" href="later.data"><link rel="preload" as="invalid" href="later.data">
+      <link rel="prefetch" as="fetch" href="later.data">
+      <template><link rel="preload" as="fetch" href="later.data"></template>`,
+    "asset.data": "preloaded bytes", "copy.glb": "preloaded bytes", "later.data": "deferred bytes",
+  });
+  const prepared = await prepareSandboxPackage(pkg);
+  const manifest = createSandboxPlaybackManifest(prepared);
+  assert.deepEqual(manifest.preloadDigests, [pkg.manifest.files["asset.data"].sha256]);
+  const { startup, deferred } = partitionSandboxPackageFiles(manifest);
+  assert.deepEqual(startup, ["index.html", "asset.data", "copy.glb"]);
+  assert.deepEqual(deferred, ["later.data"]);
+  const files = Object.fromEntries(startup.map(path => [path, pkg.files[path]]));
+  const partial = await prepareSandboxPackage({ manifest, files });
+  assert.doesNotMatch(snapshotPreparedPackage(partial).plan.html.join(""), /<link\b/);
+  await assert.rejects(prepareSandboxPackage({ manifest: { ...manifest, preloadDigests: ["f".repeat(64)] }, files }), /Invalid package preload digests/);
+});
+
 test("pure Node preparation verifies/compiles multi-file packages without DOM, execution or network", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => { throw new Error("must never fetch"); };
@@ -56,7 +80,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.8.0");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.9.0");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);

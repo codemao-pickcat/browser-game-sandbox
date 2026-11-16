@@ -1,4 +1,4 @@
-# Offline package runtime (0.8.0)
+# Offline package runtime (0.9.0)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.8.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.9.0", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -154,7 +154,8 @@ Only root `index.html` is an executable document. Secondary `.html` files remain
 | Other `meta http-equiv="..."` | The whole `meta` element is dropped: a Blob/srcdoc document has no HTTP response header for those directives to override |
 | SRI and other inert attributes, `nomodule` | `integrity/ping/manifest/codebase/archive/srcdoc` are deleted on any element; a classic `<script nomodule>` element is removed from the document entirely, its `src` is not rewritten, materialized or parsed as a module (only its bytes remain for package fetch), and its inline code is dropped. `nomodule` has no meaning on module scripts, so a `type="module" nomodule` script keeps running and only the attribute is removed |
 | Form submission (`action`/`formaction`) | Rejected (`UNSUPPORTED_HTML_FORM`); layout and controls still work |
-| `link rel=icon/apple-touch-icon/preload/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time without validating or rewriting the href, so a `data:,` favicon, missing file or external URL does not block preparation |
+| `link rel=preload` in root `index.html` | `createSandboxPlaybackManifest` includes the digest of each valid package-local `href` with a preload `as` destination. Template links, external URLs and missing targets are ignored. The hint is removed from the executable document |
+| `link rel=icon/apple-touch-icon/prefetch/modulepreload/manifest`, `preconnect/dns-prefetch` | Removed at compile time |
 | Combined `rel` token lists (e.g. `rel="stylesheet preload"`) | Tokens are case-insensitive and order-independent. A combination with `stylesheet` keeps only that token and still validates the href as a stylesheet. Unknown tokens such as `shortcut` remain rejected (`UNSUPPORTED_HTML_LINK`) |
 
 JS files are validated with modern module syntax; classic references cannot depend on sloppy-only syntax such as `with`. Inline handlers are also parsed and cannot depend on top-level `return`. `document.write`, parser-stream timing, module `document.currentScript`, original HTTP paths/import.meta.url, XHR and arbitrary dynamic loading are not transparently compatible. The runtime replays DOMContentLoaded/load once after initial scripts finish. Later application tasks, playback and custom app readiness are outside `session.ready`.
