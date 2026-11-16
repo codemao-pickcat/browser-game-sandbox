@@ -1,10 +1,11 @@
 import { isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 
-export const SANDBOX_RUNTIME_VERSION = "0.7.0" as const;
+export const SANDBOX_RUNTIME_VERSION = "0.8.0" as const;
 
 export type SandboxPackageManifest = {
   readonly entrypoint: "index.html";
   readonly files: Readonly<Record<string, { readonly sha256: string; readonly size: number }>>;
+  readonly resourceLoading?: "on-demand-v1";
 } & ({ readonly formatVersion: 1 } | { readonly formatVersion: 2; readonly moduleAliases: Readonly<Record<string, string>> });
 export interface SandboxPackageInput {
   readonly manifest: SandboxPackageManifest;
@@ -87,7 +88,13 @@ export function validatePackageManifest(value: unknown): {
     if (totalBytes > SANDBOX_PACKAGE_LIMITS.totalBytes) packageError("PACKAGE_TOO_LARGE", "Package byte budget exceeded");
     files[path] = Object.freeze({ sha256, size });
   }
-  const base = { entrypoint: "index.html" as const, files: Object.freeze(files) };
+  if (candidate.resourceLoading !== undefined && candidate.resourceLoading !== "on-demand-v1") {
+    return packageError("INVALID_MANIFEST", "Invalid package resource loading mode");
+  }
+  const base = {
+    entrypoint: "index.html" as const, files: Object.freeze(files),
+    ...(candidate.resourceLoading ? { resourceLoading: "on-demand-v1" as const } : {}),
+  } as const;
   let manifest: SandboxPackageManifest;
   if (candidate.formatVersion === 2) {
     const value = candidate.moduleAliases;
@@ -218,4 +225,19 @@ export function knownResourceMime(path: string): string | undefined {
 }
 export function resourceMime(path: string): string {
   return knownResourceMime(path) ?? "application/octet-stream";
+}
+
+/** V1 only defers files that have no synchronous Blob or compiler consumer. */
+export function partitionSandboxPackageFiles(manifest: SandboxPackageManifest): {
+  startup: string[]; deferred: string[]; startupBytes: number;
+} {
+  const startup: string[] = [], deferred: string[] = [];
+  let startupBytes = 0;
+  const entries = Object.entries(manifest.files);
+  const eagerDigests = new Set(entries.filter(([path]) => knownResourceMime(path) !== undefined).map(([, file]) => file.sha256));
+  for (const [path, file] of entries) {
+    if (manifest.resourceLoading === "on-demand-v1" && !eagerDigests.has(file.sha256)) deferred.push(path);
+    else { startup.push(path); startupBytes += file.size; }
+  }
+  return { startup, deferred, startupBytes };
 }

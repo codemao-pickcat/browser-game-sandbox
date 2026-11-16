@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.7.0）
+# 离线作品包运行时（0.8.0）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.7.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.8.0"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -42,7 +42,9 @@ await session.ready;     // 接收、重新校验、资源装载及初始脚本�
 session.terminate("player closed");
 ```
 
-`prepareSandboxPackage` 同时支持 Node.js 24+ 与浏览器；使用 parse5、css-tree、Acorn 解析，**不引用浏览器 DOM、不执行作品代码、不访问网络**。它校验根入口、完整文件集、SHA-256、字节长度、路径与已知格式的解析约束，并复制输入字节，后续修改输入不改变准备结果。返回的 `PreparedSandboxPackage` 是当前 JS realm 中的不可变句柄，不可 JSON 序列化/跨进程复用；服务端准备通过后，player 下载同一包并重新准备。
+可信宿主可在完成整包预审后，以 `manifest.resourceLoading: "on-demand-v1"` 启用包内数据按需加载。用 `partitionSandboxPackageFiles(manifest)` 得到启动和延迟路径，仅传入启动文件的字节；`loadDeferredFile(path, signal)` 提供延迟文件。已识别格式及其同摘要文件保留在启动集合。其他文件通过包内 `fetch` 的 GET 在首次读取时获取，HEAD 从清单提供响应头。SDK 在交付前校验大小和 SHA-256，并在会话内合并并发读取、复用已验证字节及在结束时取消请求。`initializationTimeoutMs` 可为初始化期间的读取提供预算，握手和初始包传输仍受各自限制。
+
+`prepareSandboxPackage` 同时支持 Node.js 24+ 与浏览器；使用 parse5、css-tree、Acorn 解析，**不引用浏览器 DOM、不执行作品代码、不访问网络**。它校验根入口、文件清单、输入字节的 SHA-256、字节长度、路径与已知格式的解析约束，并复制输入字节，后续修改输入不改变准备结果。返回的 `PreparedSandboxPackage` 是当前 JS realm 中的不可变句柄，不可 JSON 序列化/跨进程复用；服务端准备通过后，player 下载启动所需字节并重新准备。
 
 宿主需运行于 http(s) Origin（生产应使用 HTTPS）。普通 bundler 可使用包根入口；无 bundler 的可信 player 可同源托管 `@codemao-pickcat/browser-game-sandbox/package.runtime.js`，它是无外部依赖的 ESM bundle，包含可信 bootstrap 字符串。禁止从作品包中替换此运行时。`game.preload.js` 是旧跨源资源服务入口，离线包不依赖它。
 
@@ -131,7 +133,7 @@ Fallback 数据（如 `.glb/.gltf/.data/.wasm/.exe/.zip/.htm`）不自动生成 
 | 内联 `data:` URL | `src`/`srcset`/`poster`/`background`、CSS `url()`/`image-set()` 和字面量 `new URL` 的非执行资源位置允许，保留原 URL，不解码为包内文件；`img-src`/`font-src`/`media-src` 允许 `data:`，浏览器在图片上下文渲染 SVG 时不执行脚本。脚本、模块、Worker、样式表（含 `@import`）与直接 `fetch()` 不接受 `data:`，报 `INLINE_RESOURCE`；链接导航仍拒绝 |
 | SVG | 仅自包含、无脚本/动画/外部 URL 的 SVG。`style` 属性按 CSS 声明列表校验，与表现属性一样只允许规定属性引用文档内部 `url(#id)`，不接受无法解析的 CSS 或活跃协议；仍不支持 `<style>`、`foreignObject`、`image`/`use` 等嵌入形式 |
 | 静态引用带 query/fragment | HTML stylesheet/image/classic script、CSS url/import、literal `new URL` 只按包路径查找；query 不附加到 Blob，fragment 保留；不产生联网或独立 cache 版本，不适用于 ESM query/hash |
-| `fetch("data.json")`、`fetch("model.glb")`、运行时计算包内相对路径 | 本地兼容层从完整文件集提供 GET/HEAD，返回原始包字节；HEAD 保留 MIME/字节长度且无响应体，fallback MIME 为 `application/octet-stream`。query/hash 不改变读取的文件或字节；相对路径始终以根 index.html 为基准，不以调用脚本为基准 |
+| `fetch("data.json")`、`fetch("model.glb")`、运行时计算包内相对路径 | 本地兼容层从清单指定的文件集提供 GET/HEAD，返回原始包字节；HEAD 保留 MIME/字节长度且无响应体，fallback MIME 为 `application/octet-stream`。query/hash 不改变读取的文件或字节；相对路径以根 index.html 为基准 |
 | `fetch(new URL("./data.json", import.meta.url))` | 支持重写后的本地 Blob 对应原始字节；不存在的文件/外部 URL/非 GET-HEAD 明确 TypeError，无网络回退 |
 | `fetch(new URL(URL.createObjectURL(blob)))` | 支持作品文档用 `URL.createObjectURL` 创建且仍有效的 Blob，GET/HEAD 在 iframe 内直接返回字节或响应头。片段可用，查询参数按浏览器 Blob URL 规则处理 |
 | `window.game.storageGet/Set/Delete` | 提供 adapter 时支持，严格对象 schema；不提供 adapter 时不暴露存储方法 |
@@ -220,7 +222,7 @@ Adapter 的方法在会话创建时绑定，必须由宿主闭包绑定**固定�
 
 ## 隔离与清理
 
-iframe 保留 `allow-scripts`，仅 pointerLock 授权时追加 `allow-pointer-lock`，永不带 `allow-same-origin`；精确验证 `contentWindow`、`origin === "null"`、256-bit 一次性 token。子端核对实际父窗口、确切可信父 Origin 和 token，仅接受一次单端口 init。包传输与 RPC 使用不同 MessagePort，后者复用原 Host 安全机制；包不会混入普通 RPC 消息预算。用户脚本在认证、收齐/复核所有字节、创建已知可物化资源的 Blob 与 import map 之后才执行；fallback 不进入 Blob 计划，但仍计入全部路径、数量、字节、SHA-256 和传输校验。没有父 Origin Blob 可供不透明子文档直接取用的假设。
+iframe 保留 `allow-scripts`，仅 pointerLock 授权时追加 `allow-pointer-lock`，永不带 `allow-same-origin`；精确验证 `contentWindow`、`origin === "null"`、256-bit 一次性 token。子端核对实际父窗口、确切可信父 Origin 和 token，仅接受一次单端口 init。包传输与 RPC 使用不同 MessagePort，后者复用原 Host 安全机制；包不会混入普通 RPC 消息预算。用户脚本在认证、收齐并复核启动文件、创建已知可物化资源的 Blob 与 import map 之后才执行；fallback 不进入 Blob 计划，但仍计入全部路径、数量、字节、SHA-256 和传输校验。没有父 Origin Blob 可供不透明子文档直接取用的假设。
 
 Node/browser prepare 与子端接收前共享同一纯 manifest 元数据 validator（版本、根入口、路径、文件数、SHA 字符串格式与大小预算），但子端收齐后仍独立复核文件实际字节的 SHA-256 与格式，不以宿主检查替代子端验证。MIME 已知识别仅接受表的自有键，未知扩展名不能通过 Object 原型链别名进入已知格式；manifest 不增加 MIME/类别/权限字段。包内 fetch 也仅查询文件集自有键，存在的原型键名路径可读，缺失的 `constructor` 等路径必须失败，没有网络回退。
 

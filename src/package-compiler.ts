@@ -5,7 +5,7 @@ import { simple } from "acorn-walk";
 import { isNpmPackagePath, parseNpmSpecifier } from "./package-npm.js";
 import {
   SANDBOX_PACKAGE_LIMITS as LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError,
-  isSystemJsAlias, moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest,
+  isSystemJsAlias, moduleSpecifier, packageError, parseInlineDataUrl, resolvePackageReference, knownResourceMime, validatePackageManifest, partitionSandboxPackageFiles,
   type CompiledResource, type PackagePlan, type PackageSnapshot, type ResourcePart,
   type SandboxPackageInput, type SandboxPackageManifest,
 } from "./package-format.js";
@@ -75,7 +75,8 @@ export async function verifyPackageBytes(input: SandboxPackageInput): Promise<Om
   if (!input || typeof input !== "object" || !input.files || typeof input.files !== "object" || Array.isArray(input.files)) {
     return packageError("INVALID_MANIFEST", "Package files must be a byte record");
   }
-  const { manifest, paths, totalBytes } = validatePackageManifest(input.manifest);
+  const { manifest, totalBytes } = validatePackageManifest(input.manifest);
+  const { startup: paths } = partitionSandboxPackageFiles(manifest);
   const files: Record<string, Uint8Array> = Object.create(null);
   for (const path of paths) {
     const metadata = manifest.files[path]!;
@@ -103,7 +104,7 @@ export function snapshotPreparedPackage(prepared: PreparedSandboxPackage): Packa
 }
 
 export function compileVerifiedPackage({ manifest, files }: Omit<PackageSnapshot, "plan">): PackagePlan {
-  return compilePackage(files, manifest.formatVersion === 2 ? manifest.moduleAliases : undefined);
+  return compilePackage(files, manifest.formatVersion === 2 ? manifest.moduleAliases : undefined, undefined, manifest.files);
 }
 
 /** Reuses the compiler's source traversal, without acquiring or executing modules. */
@@ -113,7 +114,7 @@ export function collectSandboxNpmImports(files: SandboxPackageInput["files"]): r
   return [...specifiers];
 }
 
-export function compilePackage(files: Readonly<Record<string, Uint8Array>>, aliases?: Readonly<Record<string, string>>, specifiers?: Set<string>): PackagePlan {
+export function compilePackage(files: Readonly<Record<string, Uint8Array>>, aliases?: Readonly<Record<string, string>>, specifiers?: Set<string>, declaredFiles: object = files): PackagePlan {
   const markers: { asset: string; suffix: string; worker?: boolean }[] = [];
   const workerPaths = new Set<string>();
   const classicPaths = new Set<string>();
@@ -135,7 +136,7 @@ export function compilePackage(files: Readonly<Record<string, Uint8Array>>, alia
     const resolved = resolvePackageReference(value, from);
     if (aliases && isNpmPackagePath(resolved.path)) return packageError("UNSUPPORTED_MODULE", "Use npm imports to access cached modules");
     referencedPaths.add(resolved.path);
-    if (!Object.hasOwn(files, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
+    if (!Object.hasOwn(declaredFiles, resolved.path)) return packageError("MISSING_RESOURCE", `${from} references missing file: ${value}`);
     const mime = knownResourceMime(resolved.path);
     if (mime === undefined && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", `Fallback data supports package GET/HEAD only, not ${kind} references: ${value}`);
     if (mime === "text/html" && kind !== "fetch") packageError("UNSUPPORTED_REFERENCE", "HTML is passive fetch data only; HTML assets, subdocuments and navigation are unsupported");

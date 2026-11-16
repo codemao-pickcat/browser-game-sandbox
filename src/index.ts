@@ -17,6 +17,7 @@ export * from "./protocol.js";
 export * from "./transport.js";
 export { prepareSandboxPackage, type PreparedSandboxPackage, type PrepareSandboxPackageOptions, type SandboxPackageDiagnostic, type SandboxPackageInput, type SandboxPackageManifest, SANDBOX_PACKAGE_LIMITS, SANDBOX_RUNTIME_VERSION, SandboxPackageError } from "./package-prepare.js";
 export { createSandboxPackageSession, type SandboxPackageSession, type SandboxPackageSessionOptions } from "./package-session.js";
+export { partitionSandboxPackageFiles } from "./package-format.js";
 export { normalizeSandboxPackageManifest } from "./package-format.js";
 export { collectSandboxNpmImports } from "./package-compiler.js";
 export { isExactNpmVersion, isNpmPackageName, isNpmPackagePath, npmPackagePath, parseNpmSpecifier } from "./package-npm.js";

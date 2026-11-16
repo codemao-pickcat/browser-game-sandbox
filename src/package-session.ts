@@ -3,7 +3,8 @@ import { buildOfflineBrowserPolicy } from "./browser-capabilities.js";
 import { SandboxHostRpcSession } from "./host.js";
 import { assertValidOrigin } from "./protocol.js";
 import { snapshotPreparedPackage, type PreparedSandboxPackage } from "./package-prepare.js";
-import { SANDBOX_PACKAGE_LIMITS as LIMITS, type PackageSnapshot } from "./package-format.js";
+import { SANDBOX_PACKAGE_LIMITS as LIMITS, partitionSandboxPackageFiles, type PackageSnapshot } from "./package-format.js";
+import { serveDeferredFiles, type SandboxPackageFileLoader } from "./package-deferred.js";
 import { packageStoragePlugin, type SandboxStorageAdapter } from "./package-storage.js";
 import { packageClipboardPlugin, type SandboxClipboardAdapter } from "./package-clipboard.js";
 import { packagePlayerProfilePlugin, parseSandboxPlayerAvatar, type SandboxPlayerProfile } from "./package-player-profile.js";
@@ -19,6 +20,10 @@ export interface SandboxPackageSessionOptions {
   readonly clipboard?: SandboxClipboardAdapter;
   /** Trusted host snapshot, exposed only with the playerProfile grant. */
   readonly playerProfile?: SandboxPlayerProfile;
+  /** Supplies only the declared deferred paths of an on-demand package. */
+  readonly loadDeferredFile?: SandboxPackageFileLoader;
+  /** Optional total load budget when an on-demand package fetches during startup. */
+  readonly initializationTimeoutMs?: number;
   readonly onTerminate?: (reason: string) => void;
 }
 export interface SandboxPackageSession {
@@ -37,6 +42,12 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   if (!hostWindow) throw new TypeError("Package session requires a live browser document");
   assertValidOrigin(hostWindow.location.origin);
   let snapshot: PackageSnapshot | undefined = snapshotPreparedPackage(options.package);
+  const { deferred, startupBytes } = partitionSandboxPackageFiles(snapshot.manifest);
+  if (deferred.length && !options.loadDeferredFile) throw new TypeError("On-demand package requires a file loader");
+  const initializationTimeoutMs = options.initializationTimeoutMs ?? LIMITS.transferTimeoutMs;
+  if (!Number.isSafeInteger(initializationTimeoutMs) || initializationTimeoutMs <= 0 || initializationTimeoutMs > 600_000) {
+    throw new TypeError("Invalid package initialization timeout");
+  }
   const storage = packageStoragePlugin(options.storage);
   const clipboard = packageClipboardPlugin(permissions.includes("clipboardRead") ? options.clipboard : undefined);
   const profile = permissions.includes("playerProfile") ? options.playerProfile : undefined;
@@ -67,6 +78,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   iframe.title = "Sandbox package";
   let stopped = false, loadObserved = false, portTransferred = false, bootstrapConnected = false, readySettled = false;
   let control: MessagePort | undefined;
+  let closeDeferredFiles: (() => void) | undefined;
   let pendingAck: { sequence: number; resolve(): void; reject(error: Error): void } | undefined;
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -80,6 +92,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
     hostWindow.removeEventListener("message", onWindowMessage);
     iframe.removeEventListener("load", onLoad);
     control?.close(); control = undefined;
+    closeDeferredFiles?.(); closeDeferredFiles = undefined;
     pendingAck?.reject(new Error(reason)); pendingAck = undefined;
     try { iframe.remove(); } catch { /* Port/listener cleanup still completes. */ }
     if (!readySettled) { readySettled = true; rejectReady(new Error(reason)); }
@@ -88,7 +101,9 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   const rpc = new SandboxHostRpcSession({ ...plugins, onTerminate: cleanup });
   void rpc.connected.catch(() => {});
   const terminate = (reason = "Sandbox package terminated") => rpc.terminate(reason);
-  const timer = setTimeout(() => terminate("Sandbox package load timed out"), LIMITS.transferTimeoutMs);
+  const transferStartedAt = performance.now();
+  const timeOut = () => terminate("Sandbox package load timed out");
+  let timer = setTimeout(timeOut, Math.min(LIMITS.transferTimeoutMs, initializationTimeoutMs));
   const onLoad = () => {
     if (!loadObserved) { loadObserved = true; return; }
     terminate("Sandbox iframe navigated after its bootstrap document");
@@ -103,7 +118,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   async function transfer(): Promise<void> {
     const payload = snapshot;
     if (!payload || stopped || !control) return;
-    await waitAck(-1, () => control!.postMessage({ type: "begin", manifest: payload.manifest, totalBytes: payload.totalBytes }));
+    await waitAck(-1, () => control!.postMessage({ type: "begin", manifest: payload.manifest, totalBytes: startupBytes }));
     let sequence = 0;
     for (const [path, bytes] of Object.entries(payload.files)) {
       for (let offset = 0; offset < bytes.byteLength || (offset === 0 && bytes.byteLength === 0); offset += LIMITS.transferChunkBytes) {
@@ -118,7 +133,15 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
       // Send the authorized binary once over the authenticated package port.
       const avatar = playerAvatar;
       playerAvatar = undefined;
-      control!.postMessage({ type: "finish", ...(avatar ? { playerAvatar: avatar } : {}) });
+      const ports: MessagePort[] = [];
+      if (deferred.length) {
+        const channel = new MessageChannel();
+        closeDeferredFiles = serveDeferredFiles(channel.port1, payload.manifest, deferred, options.loadDeferredFile!);
+        ports.push(channel.port2);
+        clearTimeout(timer);
+        timer = setTimeout(timeOut, Math.max(0, initializationTimeoutMs - (performance.now() - transferStartedAt)));
+      }
+      control!.postMessage({ type: "finish", ...(avatar ? { playerAvatar: avatar } : {}) }, ports);
     }
   }
   const onControlMessage = (event: MessageEvent) => {
