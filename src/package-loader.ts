@@ -3,6 +3,7 @@ import type { SandboxGameApiBindings } from "./game-api-config.js";
 import { moduleSpecifier, resolvePackageReference, resourceMime, type PackageSnapshot, type ResourcePart } from "./package-format.js";
 import { installMemoryStorage } from "./package-web-storage.js";
 import { installPackageSystemJs } from "./package-systemjs.js";
+import { cloudApplyRequest, cloudApplyResult, cloudGetRequest, cloudGetResult, createCloudGameMethod } from "./package-cloud-variables-wire.js";
 import type { SandboxPlayerProfile } from "./package-player-profile.js";
 import type { openDeferredFiles } from "./package-deferred.js";
 
@@ -184,6 +185,8 @@ export async function loadSandboxPackage(snapshot: PackageSnapshot, client: Sand
     for (const [name, binding] of Object.entries(methods)) {
       api[name] = (payload, options = {}) => client.call(binding.method, payload, { timeoutMs: binding.defaultTimeoutMs, ...options });
     }
+    if (methods.cloudGet) api.cloudGet = createCloudGameMethod(client, methods.cloudGet, cloudGetRequest, cloudGetResult);
+    if (methods.cloudApply) api.cloudApply = createCloudGameMethod(client, methods.cloudApply, cloudApplyRequest, cloudApplyResult);
     const profileBinding = methods.getPlayerProfile;
     if (profileBinding) {
       api.getPlayerProfile = async (payload, options) => {

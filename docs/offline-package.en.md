@@ -1,4 +1,4 @@
-# Offline package runtime (0.10.0)
+# Offline package runtime (0.11.0)
 
 [简体中文](./offline-package.zh-CN.md)
 
@@ -10,7 +10,7 @@ The trusted host supplies a manifest and file bytes instead of serving each game
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.10.0", equal to package.json
+  SANDBOX_RUNTIME_VERSION, // "0.11.0", equal to package.json
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -32,6 +32,7 @@ const session = createSandboxPackageSession({
   permissions, // Explicit grants AFTER trusted-player consent; default [].
   clipboard, // Optional SandboxClipboardAdapter; also requires clipboardRead.
   playerProfile, // Optional SandboxPlayerProfile; also requires playerProfile.
+  cloudVariables, // Optional SandboxCloudVariablesAdapter; also requires cloudVariables.
   storage, // Optional adapter bound to a fixed game/viewer scope by the host.
   onTerminate(reason) { /* Release host state; do not insert raw reasons into HTML. */ },
 });
@@ -54,13 +55,14 @@ MOSS supplies a `formatVersion: 2` manifest for deployments with npm dependencie
 ## Explicit work permissions
 
 ```ts
-type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile";
+type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile" | "cloudVariables";
 // Frozen tuple in this exact order:
-SANDBOX_PACKAGE_PERMISSIONS; // ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile"]
+SANDBOX_PACKAGE_PERMISSIONS; // ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile", "cloudVariables"]
 declare function normalizeSandboxPackagePermissions(input: unknown): SandboxPackagePermission[];
 // Session additions:
 // permissions?: readonly SandboxPackagePermission[]
 // clipboard?: SandboxClipboardAdapter
+// cloudVariables?: SandboxCloudVariablesAdapter
 ```
 
 `normalizeSandboxPackagePermissions` rejects non-arrays (including undefined/null), sparse arrays and unknown/non-string entries with TypeError; returns a fresh deduplicated array in canonical order; never mutates input. `eval` necessarily includes `wasm` because CSP `unsafe-eval` also enables WASM. Session omission/undefined alone defaults to `[]`; invalid explicit values fail closed before creating an iframe. Permissions are not added to the manifest or inferred during preparation.
@@ -94,6 +96,34 @@ const profile = await window.game.getPlayerProfile({});
 ```
 
 The authenticated package transfer delivers the avatar Blob once. Profile reads return it alongside the identity fields.
+
+### Cloud variables
+
+The `cloudVariables` grant and `cloudVariables` session adapter together expose two asynchronous methods in the work. The SDK exports the adapter interface and all four request and result types.
+
+```ts
+interface SandboxCloudVariablesAdapter {
+  get(request: SandboxCloudGetRequest, signal: AbortSignal): Promise<SandboxCloudGetResult>;
+  apply(request: SandboxCloudApplyRequest, signal: AbortSignal): Promise<SandboxCloudApplyResult>;
+}
+```
+
+```js
+const { value, rev } = await window.game.cloudGet({ name: "progress" });
+const requestId = `${Date.now()}.${crypto.randomUUID()}`;
+await window.game.cloudApply({
+  name: "progress", op: "set", arg: { value: { ...value, level: 2 } }, ifRev: rev, requestId,
+});
+```
+
+- `cloudGet` accepts `name` and optional `includeLimits`. Collection pages accept `limit` from 1 to 64 and an opaque `cursor`. Map lookups accept `key` or `self: true` in place of paging parameters. Value reads return `{ value, rev }`. Pages return `{ items, rev, nextCursor }`, with `null` as the final cursor. Map page items are `{ key, value }` and may include `isSelf`. Requested limits return `limitStatus` entries with `remaining` and `resetAt`.
+- `cloudApply` takes `name`, `requestId`, `op`, `arg`, and an `ifRev` required for `set`, `replaceAt`, and `removeAt`. Allowed operation arguments are `set({value})`, `increment({by})`, `append({value})`, `replaceAt({index,value})`, `removeAt({index})`, `put({key?,value})` and `remove({key?})`. The service determines whether a map key is supplied or inferred. A successful write returns `{ changed, rev }`. Keep the same request ID when retrying the same action.
+
+Each request and response is a single canonical JSON string on the bridge with a **32,768 UTF-8 byte** limit for the full message. The SDK accepts strict JSON data objects, validates message shapes at both ends, and enforces valid Unicode without U+0000. The adapter and service own permissions, declaration rules, paging, data quotas and request-ID expiry. Bind the adapter to the authorized work, file set, environment and player session when creating the sandbox. Resolve service credentials and routing in the trusted host. The iframe policy continues to block normal network access.
+
+Both calls accept `{ signal, timeoutMs }` as their optional second argument. The host permits up to four simultaneous reads and one write, with a 15-second host and default client deadline. Cancel, timeout and termination abort the adapter's signal. The SDK discards late results and keeps the concurrency slot until the adapter settles. A write committed just before cancellation stays committed.
+
+Host adapters can throw `new SandboxCloudVariablesError(code, resetAt?)` for a public `SandboxCloudErrorCode`. The work receives the code and a fixed message. A `LIMIT_REACHED` error can carry an ISO UTC reset time or `null` for a lifetime limit. Malformed work arguments fail with `INVALID_ARGUMENT`. Unexpected adapter failures use the bridge's sanitized `INTERNAL_ERROR`.
 
 ## File recognition and raw data
 

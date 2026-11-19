@@ -11,7 +11,7 @@ window.launch=async(sources,permissions,worker=false)=>{
   const files=Object.fromEntries(Object.entries(sources).map(([path,text])=>[path,new TextEncoder().encode(text)]));
   const metadata=Object.fromEntries(await Promise.all(Object.entries(files).map(async([path,bytes])=>[path,{size:bytes.length,sha256:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('')}])));
   const prepared=await prepareSandboxPackage({manifest:{formatVersion:1,entrypoint:'index.html',files:metadata},files},{worker});
-  window.session=createSandboxPackageSession({container:document.querySelector('#container'),package:prepared,permissions,clipboard:window.clipboardAdapter,playerProfile:window.playerProfile});
+  window.session=createSandboxPackageSession({container:document.querySelector('#container'),package:prepared,permissions,clipboard:window.clipboardAdapter,playerProfile:window.playerProfile,cloudVariables:window.cloudAdapter});
   await session.ready;
 };
 window.hostReady=true;
@@ -194,3 +194,37 @@ test("clipboard RPC serializes reads, propagates cancel and drops late reads aft
   await page.evaluate(() => releaseRead("discarded after termination"));
   await expect(page.locator("iframe")).toHaveCount(0);
 });
+
+for (const [granted, supplied] of [[false, true], [true, false], [true, true]]) {
+  test(`cloud variables require grant and adapter (${granted}, ${supplied})`, async ({ page }) => {
+    await hostPage(page);
+    await page.evaluate(async ({ granted, supplied }) => {
+      const { SandboxCloudVariablesError } = await import("/runtime.js");
+      window.cloudCalls = [];
+      if (supplied) window.cloudAdapter = {
+        async get(request) { cloudCalls.push(request); return { value: 5, rev: 6 }; },
+        async apply(request) {
+          cloudCalls.push(request);
+          if (request.arg.by === 1) return { changed: true, rev: 7 };
+          throw new SandboxCloudVariablesError("LIMIT_REACHED", "2026-11-20T00:00:00.000Z");
+        },
+      };
+      await launch({ "index.html": `<script type="module">
+        window.cloudProbe={get:typeof game.cloudGet,apply:typeof game.cloudApply,origin:location.origin};
+        if (game.cloudGet && game.cloudApply) {
+          cloudProbe.value=await game.cloudGet({name:"likes"});
+          const write={name:"likes",op:"increment",arg:{by:1},requestId:Date.now()+"."+crypto.randomUUID()};
+          cloudProbe.applied=await game.cloudApply(write);
+          try{await game.cloudApply({...write,arg:{by:2}});}catch(error){cloudProbe.error={code:error.code,resetAt:error.resetAt};}
+          try{await game.cloudGet({name:"likes",playerId:"alternate"});}catch(error){cloudProbe.invalid=error.code;}
+        }
+      </script>` }, granted ? ["cloudVariables"] : []);
+    }, { granted, supplied });
+    const enabled = granted && supplied;
+    assert.deepEqual(await child(page).evaluate(() => cloudProbe), enabled ? {
+      get: "function", apply: "function", origin: "null", value: { value: 5, rev: 6 }, applied: { changed: true, rev: 7 },
+      error: { code: "LIMIT_REACHED", resetAt: "2026-11-20T00:00:00.000Z" }, invalid: "INVALID_ARGUMENT",
+    } : { get: "undefined", apply: "undefined", origin: "null" });
+    assert.equal(await page.evaluate(() => cloudCalls.length), enabled ? 3 : 0);
+  });
+}

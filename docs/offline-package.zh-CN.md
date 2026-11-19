@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.10.0）
+# 离线作品包运行时（0.11.0）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.10.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.11.0"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -33,6 +33,7 @@ const session = createSandboxPackageSession({
   permissions, // 可信 player 完成授权后显式传入；默认 []
   clipboard, // 可选 SandboxClipboardAdapter；同时要求 clipboardRead
   playerProfile, // 可选 SandboxPlayerProfile，同时要求 playerProfile 权限
+  cloudVariables, // 可选 SandboxCloudVariablesAdapter，同时要求 cloudVariables 权限
   storage, // 可选，宿主闭包绑定固定作用域
   onTerminate(reason) { /* 释放业务状态；不要将未过滤的 reason 插入 HTML */ },
 });
@@ -53,13 +54,14 @@ MOSS 为使用 npm 的部署提供 `formatVersion: 2` 清单。`moduleAliases` �
 ## 作品可选权限
 
 ```ts
-export type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile";
+export type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile" | "cloudVariables";
 // 固定顺序、冻结的 tuple：
-SANDBOX_PACKAGE_PERMISSIONS; // ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile"]
+SANDBOX_PACKAGE_PERMISSIONS; // ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile", "cloudVariables"]
 declare function normalizeSandboxPackagePermissions(input: unknown): SandboxPackagePermission[];
 // createSandboxPackageSession 新增：
 // permissions?: readonly SandboxPackagePermission[]
 // clipboard?: SandboxClipboardAdapter
+// cloudVariables?: SandboxCloudVariablesAdapter
 ```
 
 normalize 拒绝非数组（包括 undefined/null）、稀疏数组、未知值及非字符串项，抛 TypeError；返回新数组，去重并按上述顺序排序，不改输入。`eval` 必须蕴含 `wasm`：浏览器 CSP 的 `unsafe-eval` 本身也放开 WASM。会话仅在省略 permissions 或其值为 undefined 时默认 `[]`；显式错误输入在创建 iframe 前失败。权限不写入 manifest，也不从代码或 prepare 结果推断。
@@ -93,6 +95,34 @@ const profile = await window.game.getPlayerProfile({});
 ```
 
 头像 Blob 在经过认证的作品传输中交付一次。读取资料时，SDK 将它与身份字段一起返回。
+
+### 云变量
+
+可信宿主同时授予 `cloudVariables` 并传入同名 adapter 后，作品获得两个异步方法。SDK 导出 adapter 接口及四个请求和响应类型。
+
+```ts
+interface SandboxCloudVariablesAdapter {
+  get(request: SandboxCloudGetRequest, signal: AbortSignal): Promise<SandboxCloudGetResult>;
+  apply(request: SandboxCloudApplyRequest, signal: AbortSignal): Promise<SandboxCloudApplyResult>;
+}
+```
+
+```js
+const { value, rev } = await window.game.cloudGet({ name: "progress" });
+const requestId = `${Date.now()}.${crypto.randomUUID()}`;
+await window.game.cloudApply({
+  name: "progress", op: "set", arg: { value: { ...value, level: 2 } }, ifRev: rev, requestId,
+});
+```
+
+- `cloudGet` 接收 `name` 和可选 `includeLimits`。集合可用 `limit`（1 至 64）和不透明的 `cursor` 分页。map 点查用 `key` 或 `self: true`，两者互斥且不携带分页参数。单值读取返回 `{ value, rev }`。分页返回 `{ items, rev, nextCursor }`，末页 `nextCursor` 为 null。map 的条目为 `{ key, value }`，可带 `isSelf`。请求限次时返回 `limitStatus`，每项含 `remaining` 与 `resetAt`。
+- `cloudApply` 接收 `name`、`requestId`、`op`、`arg`，以及 `set`、`replaceAt` 和 `removeAt` 必填的 `ifRev`。操作及参数为 `set({value})`、`increment({by})`、`append({value})`、`replaceAt({index,value})`、`removeAt({index})`、`put({key?,value})` 和 `remove({key?})`。map 键由服务按声明校验或推导。写入成功返回 `{ changed, rev }`。重试同一次操作时沿用原请求 ID。
+
+桥接内每次请求与响应都表示为单个规范 JSON 字符串，完整消息上限为 **32,768 UTF-8 字节**。SDK 在桥接两端检查严格的消息结构、JSON 数据类型与 Unicode，并拒绝 U+0000。声明规则、分页、存储配额、授权与请求 ID 有效期由 adapter 所属平台处理。创建会话时将 adapter 绑定到获准的作品、文件集、环境和玩家会话，服务地址和凭据由宿主管理。iframe 延续现有离线策略。
+
+两个方法的可选第二参数为 `{ signal, timeoutMs }`。宿主最多允许四次读取和一次写入同时执行，宿主与默认客户端超时均为 15 秒。取消、超时和终止会中断 adapter 的信号，SDK 丢弃迟到的结果，并保留并发名额直至 adapter 结束。取消前已提交的写入仍然生效。
+
+业务拒绝时，宿主可抛出 `new SandboxCloudVariablesError(code, resetAt?)`，其中 `code` 为公开的 `SandboxCloudErrorCode`。作品能读取 `code` 和 SDK 提供的固定消息。`LIMIT_REACHED` 可携带 ISO UTC 重置时间，累计限次用 null。参数错误返回 `INVALID_ARGUMENT`。意外的 adapter 异常以脱敏后的 `INTERNAL_ERROR` 返回。
 
 ## 预算与文件格式
 
