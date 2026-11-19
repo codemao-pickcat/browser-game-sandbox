@@ -6,7 +6,7 @@ import {
 } from "../dist/index.js";
 import { snapshotPreparedPackage } from "../dist/package-prepare.js";
 
-const order = ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile"];
+const order = ["worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile", "cloudVariables"];
 test("canonical permission list is fixed and frozen", () => {
   assert.deepEqual(SANDBOX_PACKAGE_PERMISSIONS, order);
   assert.equal(Object.isFrozen(SANDBOX_PACKAGE_PERMISSIONS), true);

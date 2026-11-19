@@ -7,6 +7,7 @@ import { SANDBOX_PACKAGE_LIMITS as LIMITS, partitionSandboxPackageFiles, type Pa
 import { serveDeferredFiles, type SandboxPackageFileLoader } from "./package-deferred.js";
 import { packageStoragePlugin, type SandboxStorageAdapter } from "./package-storage.js";
 import { packageClipboardPlugin, type SandboxClipboardAdapter } from "./package-clipboard.js";
+import { packageCloudVariablesPlugin, type SandboxCloudVariablesAdapter } from "./package-cloud-variables.js";
 import { packagePlayerProfilePlugin, parseSandboxPlayerAvatar, type SandboxPlayerProfile } from "./package-player-profile.js";
 import { normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 
@@ -20,6 +21,8 @@ export interface SandboxPackageSessionOptions {
   readonly clipboard?: SandboxClipboardAdapter;
   /** Trusted host snapshot, exposed only with the playerProfile grant. */
   readonly playerProfile?: SandboxPlayerProfile;
+  /** Fixed-scope host adapter, exposed only with the cloudVariables grant. */
+  readonly cloudVariables?: SandboxCloudVariablesAdapter;
   /** Supplies only the declared deferred paths of an on-demand package. */
   readonly loadDeferredFile?: SandboxPackageFileLoader;
   /** Optional total load budget when an on-demand package fetches during startup. */
@@ -50,6 +53,7 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   }
   const storage = packageStoragePlugin(options.storage);
   const clipboard = packageClipboardPlugin(permissions.includes("clipboardRead") ? options.clipboard : undefined);
+  const cloud = packageCloudVariablesPlugin(permissions.includes("cloudVariables") ? options.cloudVariables : undefined);
   const profile = permissions.includes("playerProfile") ? options.playerProfile : undefined;
   let playerAvatar: Blob | undefined;
   const playerProfile = packagePlayerProfilePlugin(profile && {
@@ -58,9 +62,9 @@ export function createSandboxPackageSession(options: SandboxPackageSessionOption
   });
   if (profile && profile.avatar !== null) playerAvatar = parseSandboxPlayerAvatar(profile.avatar);
   const plugins = {
-    capabilities: [...storage.capabilities, ...clipboard.capabilities, ...playerProfile.capabilities],
-    methods: { ...storage.methods, ...clipboard.methods, ...playerProfile.methods },
-    gameApi: { ...storage.gameApi, ...clipboard.gameApi, ...playerProfile.gameApi },
+    capabilities: [...storage.capabilities, ...clipboard.capabilities, ...playerProfile.capabilities, ...cloud.capabilities],
+    methods: { ...storage.methods, ...clipboard.methods, ...playerProfile.methods, ...cloud.methods },
+    gameApi: { ...storage.gameApi, ...clipboard.gameApi, ...playerProfile.gameApi, ...cloud.gameApi },
   };
   const policy = buildOfflineBrowserPolicy(permissions);
   const token = Array.from(hostWindow.crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");

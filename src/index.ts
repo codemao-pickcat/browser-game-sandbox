@@ -12,6 +12,13 @@ export * from "./plugin.js";
 export * from "./package-policy.js";
 export { SANDBOX_PACKAGE_PERMISSIONS, normalizeSandboxPackagePermissions, type SandboxPackagePermission } from "./package-permissions.js";
 export { type SandboxClipboardAdapter } from "./package-clipboard.js";
+export { type SandboxCloudVariablesAdapter } from "./package-cloud-variables.js";
+export {
+  SANDBOX_CLOUD_PAYLOAD_BYTES, SandboxCloudVariablesError,
+  type SandboxCloudErrorCode, type SandboxCloudValue,
+  type SandboxCloudGetRequest, type SandboxCloudGetResult,
+  type SandboxCloudApplyRequest, type SandboxCloudApplyResult,
+} from "./package-cloud-variables-wire.js";
 export { type SandboxPlayerProfile, SANDBOX_PLAYER_AVATAR_TYPES } from "./package-player-profile.js";
 export * from "./protocol.js";
 export * from "./transport.js";

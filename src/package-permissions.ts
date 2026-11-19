@@ -1,9 +1,9 @@
 /** Optional work capabilities. Authorization/consent belongs to the trusted player. */
-export type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile";
+export type SandboxPackagePermission = "worker" | "wasm" | "pointerLock" | "eval" | "clipboardRead" | "playerProfile" | "cloudVariables";
 
 /** Canonical persistence/display order. Never infer grants from package contents. */
 export const SANDBOX_PACKAGE_PERMISSIONS = Object.freeze([
-  "worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile",
+  "worker", "wasm", "pointerLock", "eval", "clipboardRead", "playerProfile", "cloudVariables",
 ] as const satisfies readonly SandboxPackagePermission[]);
 
 /** Validate untrusted metadata, deduplicate and expand eval's unavoidable WASM grant. */

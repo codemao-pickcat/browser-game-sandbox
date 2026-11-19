@@ -262,7 +262,7 @@ export function buildOfflineBrowserPolicy(permissions: readonly SandboxPackagePe
     grantedCapabilities.push(BROWSER_CAPABILITIES.pointerLock);
     sandboxTokens.push("allow-pointer-lock");
   }
-  // clipboardRead is Host RPC only, never a native browser capability.
+  // clipboardRead, playerProfile and cloudVariables affect only Host RPC.
   const enforcement = Object.fromEntries(Object.values(BROWSER_CAPABILITIES).map(capability => [capability, "not-granted"])) as Record<BrowserCapability, BrowserCapabilityEnforcement>;
   enforcement[BROWSER_CAPABILITIES.networkConnect] = "not-enforceable";
   enforcement[BROWSER_CAPABILITIES.websocket] = "not-enforceable";

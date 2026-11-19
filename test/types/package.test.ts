@@ -4,14 +4,26 @@ import {
   type PreparedSandboxPackage, type SandboxPackageSession,
   normalizeSandboxPackagePermissions, SANDBOX_PACKAGE_PERMISSIONS,
   type SandboxPackagePermission, type SandboxClipboardAdapter,
+  SandboxCloudVariablesError, type SandboxCloudVariablesAdapter,
 } from "../../src/index.js";
 
 const manifest: SandboxPackageManifest = { formatVersion: 1, entrypoint: "index.html", files: { "index.html": { sha256: "0".repeat(64), size: 1 } } };
 const input: SandboxPackageInput = { manifest, files: { "index.html": new Uint8Array([1]) } };
 const prepared: Promise<PreparedSandboxPackage> = prepareSandboxPackage(input);
-const version: "0.10.0" = SANDBOX_RUNTIME_VERSION;
-const permissions: readonly SandboxPackagePermission[] = normalizeSandboxPackagePermissions(["eval"]);
+const version: "0.11.0" = SANDBOX_RUNTIME_VERSION;
+const permissions: readonly SandboxPackagePermission[] = normalizeSandboxPackagePermissions(["eval", "cloudVariables"]);
 const clipboard: SandboxClipboardAdapter = { async readText(signal: AbortSignal) { signal.throwIfAborted(); return "text"; } };
+const cloudVariables: SandboxCloudVariablesAdapter = {
+  async get(request, signal) {
+    signal.throwIfAborted();
+    return { value: request.name, rev: 0 };
+  },
+  async apply(request, signal) {
+    signal.throwIfAborted();
+    if (request.op === "increment") return { changed: request.arg.by !== 0, rev: 1 };
+    throw new SandboxCloudVariablesError("OP_NOT_ALLOWED");
+  },
+};
 const permission: SandboxPackagePermission = SANDBOX_PACKAGE_PERMISSIONS[0];
 // @ts-expect-error Unknown grants are not package permissions.
 const badPermission: SandboxPackagePermission = "network";
@@ -20,7 +32,7 @@ const badClipboard: SandboxClipboardAdapter = { async readText(_signal: AbortSig
 void permission; void badPermission; void badClipboard;
 const storage: SandboxStorageAdapter = { async get(_key) { return null; }, async set(_key, _value) {}, async delete(_key) {} };
 async function session(container: HTMLElement): Promise<SandboxPackageSession> {
-  const result = createSandboxPackageSession({ container, package: await prepared, storage, permissions, clipboard, onTerminate: (_reason: string) => {} });
+  const result = createSandboxPackageSession({ container, package: await prepared, storage, permissions, clipboard, cloudVariables, onTerminate: (_reason: string) => {} });
   const connected: Promise<void> = result.connected;
   const ready: Promise<void> = result.ready;
   result.terminate("reason");
