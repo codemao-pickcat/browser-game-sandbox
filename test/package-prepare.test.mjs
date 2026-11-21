@@ -80,7 +80,7 @@ test("pure Node preparation verifies/compiles multi-file packages without DOM, e
     globalThis.__packageExecuted = false;
     const packageInput = await input({ ...fixture, "unused.js": "globalThis.__packageExecuted = true" });
     const prepared = await prepareSandboxPackage(packageInput);
-    assert.equal(SANDBOX_RUNTIME_VERSION, "0.10.0");
+    assert.equal(SANDBOX_RUNTIME_VERSION, "0.11.0");
     assert.equal(prepared.runtimeVersion, SANDBOX_RUNTIME_VERSION);
     assert.equal(Object.isFrozen(prepared.manifest.files), true);
     assert.equal(globalThis.__packageExecuted, false);
@@ -562,8 +562,8 @@ test("integrity, entrypoint, file set and byte limits fail closed", async () => 
 test("product budgets match MOSS, including 2000 files and UTF-8 path bytes", async () => {
   assert.equal(SANDBOX_PACKAGE_LIMITS.files, 2000);
   assert.equal(SANDBOX_PACKAGE_LIMITS.pathBytes, 512);
-  assert.equal(SANDBOX_PACKAGE_LIMITS.fileBytes, 25 * 1024 * 1024);
-  assert.equal(SANDBOX_PACKAGE_LIMITS.totalBytes, 100 * 1024 * 1024);
+  assert.equal(SANDBOX_PACKAGE_LIMITS.fileBytes, 30 * 1024 * 1024);
+  assert.equal(SANDBOX_PACKAGE_LIMITS.totalBytes, 200 * 1024 * 1024);
   const sources = Object.fromEntries(Array.from({length:1999},(_,i)=>[`files/${i}.txt`, ""]));
   // Construct explicitly rather than relying on character length for UTF-8.
   const longPath = "a".repeat(508)+".txt";
