@@ -1,4 +1,4 @@
-# 离线作品包运行时（0.10.0）
+# 离线作品包运行时（0.11.0）
 
 本入口不需要逐作品 HTTP 资源服务。宿主提供 manifest 与文件字节，SDK 在不透明 iframe 中创建 Blob 资源并执行作品。作品仍直接调用 `window.game`，不安装 SDK。
 
@@ -8,7 +8,7 @@
 
 ```ts
 import {
-  SANDBOX_RUNTIME_VERSION, // "0.10.0"，与 package.json 一致
+  SANDBOX_RUNTIME_VERSION, // "0.11.0"，与 package.json 一致
   prepareSandboxPackage,
   createSandboxPackageSession,
   type SandboxPackageInput,
@@ -99,8 +99,8 @@ const profile = await window.game.getPlayerProfile({});
 Node 准备、浏览器准备和子端传输共同使用 `SANDBOX_PACKAGE_LIMITS`：
 
 - 最多 2000 个文件；每个路径最多 512 UTF-8 bytes。
-- 单文件最多 25 MiB，总原始字节最多 100 MiB；解析文本上限也是 25 MiB。
-- 编译后的资源计划最多 100 MiB；CSS/Blob 依赖图不得成环（ES module 环可用）。
+- 单文件最多 30 MiB，总原始字节最多 200 MiB；解析文本上限也是 30 MiB。
+- 编译后的资源计划最多 200 MiB；CSS/Blob 依赖图不得成环（ES module 环可用）。
 - 相同 SHA 的多个逻辑路径可以共用输入 Uint8Array/ArrayBuffer；预算仍逐逻辑文件累计。SDK 不 transfer/detach 调用者输入 buffer。
 - 包独立通道、256 KiB 传输分块、逐块确认；会话装载总超时 30s。初始 RPC 握手保持原有 5s 超时。
 - 原有通用 RPC **仍为 64 KiB**，没有为传包调大；30 请求/秒、并发/请求 ID/取消/超时/销毁检查照常生效。
